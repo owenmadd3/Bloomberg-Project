@@ -17,8 +17,8 @@ if _market_open:
 
 st.markdown("""
 <style>
-  .stApp { background-color: #0a0a0a; color: #e0e0e0; }
-  .stApp header { background-color: #0a0a0a; }
+  .stApp { background-color: #ffffff; color: #111111; }
+  .stApp header { background-color: #ffffff; }
   .block-container { padding-top: 2rem; padding-bottom: 1rem; }
   /* sidebar info panel */
   .bbg-field-row {
@@ -26,9 +26,40 @@ st.markdown("""
     font-family: monospace; font-size: 11px;
     padding: 3px 0; border-bottom: 1px solid #1e1e1e;
   }
-  .bbg-field-key { color: #777; }
-  .bbg-field-val { color: #e0e0e0; }
-  .bbg-field-val-y { color: #ffd600; }
+  .bbg-field-key { color: #666; }
+  .bbg-field-val { color: #111; }
+  .bbg-field-val-y { color: #b8860b; }
+
+  /* Buttons */
+  div[data-testid="stButton"] button {
+    background-color: #f0f0f0;
+    color: #111111;
+    border: 1px solid #ccc;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  div[data-testid="stButton"] button:hover {
+    background-color: #1565c0;
+    color: #ffffff;
+    border-color: #1565c0;
+  }
+
+  /* Date inputs */
+  div[data-testid="stDateInput"] input {
+    color: #111111;
+    background-color: #f9f9f9;
+    border: 1px solid #ccc;
+  }
+  div[data-testid="stDateInput"] label { color: #444; font-size: 12px; }
+
+  /* Selectbox / slider labels */
+  div[data-testid="stSelectbox"] label,
+  div[data-testid="stRadio"] label,
+  div[data-testid="stSlider"] label { color: #333; font-size: 12px; }
+
+  /* Sidebar background */
+  section[data-testid="stSidebar"] { background-color: #f5f5f5; }
+  section[data-testid="stSidebar"] * { color: #111; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -381,7 +412,7 @@ fig = make_subplots(
 if not iv.empty:
     fig.add_trace(go.Scatter(
         x=iv.index, y=icv, mode="lines",
-        line=dict(color="#4fc3f7", width=1.2),
+        line=dict(color="#1565c0", width=1.2),
         name=f"{INDEX_SYM[exchange]} Index - Last Price {idx_last:,.0f}",
         hovertemplate=f"<b>{INDEX_SYM[exchange]}</b> %{{y:,.2f}}<extra></extra>",
     ), row=1, col=1)
@@ -405,26 +436,26 @@ fig.add_trace(go.Scatter(
 ), row=2, col=1)
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-spike = dict(showspikes=True, spikecolor="#444", spikethickness=1, spikedash="dot", spikemode="across")
+spike = dict(showspikes=True, spikecolor="#aaa", spikethickness=1, spikedash="dot", spikemode="across")
 ax_base = dict(
-    showgrid=True, gridcolor="#161616", gridwidth=1,
-    zeroline=False, linecolor="#2a2a2a", showline=True,
-    tickfont=dict(color="#666", size=10, family="monospace"),
+    showgrid=True, gridcolor="#e8e8e8", gridwidth=1,
+    zeroline=False, linecolor="#ccc", showline=True,
+    tickfont=dict(color="#555", size=10, family="monospace"),
     fixedrange=False, **spike,
 )
 
 fig.update_layout(
-    plot_bgcolor="#0d0d0d", paper_bgcolor="#0a0a0a",
-    font=dict(color="#aaa", family="monospace"),
+    plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
+    font=dict(color="#333", family="monospace"),
     hovermode="x unified", dragmode="pan",
     legend=dict(
-        bgcolor="rgba(13,13,13,0.85)", bordercolor="#2a2a2a", borderwidth=1,
-        font=dict(color="#ccc", size=10, family="monospace"),
+        bgcolor="rgba(255,255,255,0.9)", bordercolor="#ddd", borderwidth=1,
+        font=dict(color="#333", size=10, family="monospace"),
         orientation="h", x=0, y=1.01, traceorder="reversed",
     ),
     margin=dict(l=55, r=55, t=40, b=10),
     height=680,
-    modebar=dict(bgcolor="rgba(0,0,0,0)", color="#555", activecolor="#4fc3f7"),
+    modebar=dict(bgcolor="rgba(0,0,0,0)", color="#999", activecolor="#1565c0"),
 )
 
 # Both panels — single right-side y-axis
