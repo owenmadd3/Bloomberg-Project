@@ -1,0 +1,20 @@
+[
+    {
+        "date": "2026-06-03",
+        "sym": "META",
+        "name": "Meta Platforms, Inc.",
+        "price_at_pick": 597.63
+    },
+    {
+        "date": "2026-06-03",
+        "sym": "NVDA",
+        "name": "NVIDIA Corporation",
+        "price_at_pick": 222.82
+    },
+    {
+        "date": "2026-06-03",
+        "sym": "NFLX",
+        "name": "Netflix, Inc.",
+        "price_at_pick": 83.33
+    }
+]
