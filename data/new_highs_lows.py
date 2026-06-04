@@ -125,43 +125,6 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
     lo_df = build_table(lo_mask, roll_low,  "Low")
     return hi_df, lo_df
 
-def _build_nyse_name_lookup() -> dict:
-    """
-    Build ticker→full name by merging NASDAQ Trader otherlisted.txt and
-    SEC EDGAR company_tickers.json. No Streamlit caching — stored in session_state.
-    """
-    from io import StringIO
-    lookup = {}
-    # Layer 1: SEC EDGAR
-    try:
-        r = requests.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "Bloomberg-Project research@bloomberg-project.com"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        for v in r.json().values():
-            lookup[v["ticker"].upper()] = v["title"].title()
-    except Exception:
-        pass
-    # Layer 2: NASDAQ Trader (overrides EDGAR with more precise names)
-    try:
-        r = requests.get(
-            "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=15,
-        )
-        df = pd.read_csv(StringIO(r.text), sep="|")
-        nyse_rows = df[df["Exchange"] == "N"][["ACT Symbol", "Security Name"]].dropna()
-        lookup.update(
-            {sym.strip().upper(): name.strip()
-             for sym, name in zip(nyse_rows["ACT Symbol"], nyse_rows["Security Name"])}
-        )
-    except Exception:
-        pass
-    return lookup
-
-if "nyse_names" not in st.session_state:
-    st.session_state.nyse_names = _build_nyse_name_lookup()
 
 @st.cache_data(ttl=15, show_spinner=False)   # 15s to match refresh interval
 def load_index(ticker: str, start_str: str) -> pd.DataFrame:
@@ -564,11 +527,6 @@ with st.spinner("Loading constituents..."):
     hi_df, lo_df = get_constituents(prices, str(c_date))
 
 # Enrich constituents with full company names from SEC EDGAR
-nyse_names = st.session_state.nyse_names
-if not hi_df.empty:
-    hi_df.insert(1, "Company", hi_df["Ticker"].map(lambda t: nyse_names.get(t.upper(), t)))
-if not lo_df.empty:
-    lo_df.insert(1, "Company", lo_df["Ticker"].map(lambda t: nyse_names.get(t.upper(), t)))
 
 tab_hi, tab_lo = st.tabs([
     f"🟢  New 52-Week Highs  ({len(hi_df)})",
