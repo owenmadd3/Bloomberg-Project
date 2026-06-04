@@ -343,7 +343,7 @@ with st.sidebar:
         )
 
 # ── Load data — fetch 2 years (252 days rolling window + 1 year display) ─────
-fetch_start = (datetime.today() - timedelta(days=365*2 + 270)).strftime("%Y-%m-%d")
+fetch_start = (datetime.today() - timedelta(days=365*3 + 270)).strftime("%Y-%m-%d")
 
 with st.spinner(f"Fetching {exchange} ticker list..."):
     full_list = fetch_exchange_tickers(exchange)
