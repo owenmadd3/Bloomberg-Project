@@ -33,49 +33,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Universes ─────────────────────────────────────────────────────────────────
-EXCHANGE_TICKERS = {
-    "NYSE": [
-        "JPM","BAC","WFC","C","GS","MS","BLK","AXP","USB","PNC","TFC","COF","BK","STT","SCHW",
-        "JNJ","UNH","PFE","MRK","ABT","LLY","TMO","DHR","ELV","CI","HCA","CVS","MCK","CAH",
-        "XOM","CVX","COP","EOG","SLB","BKR","HAL","OXY","PSX","MPC","VLO","DVN",
-        "GE","HON","CAT","DE","BA","LMT","RTX","NOC","UPS","FDX","NSC","CSX","MMM","ITW","EMR",
-        "PG","KO","PEP","WMT","TGT","HD","LOW","MCD","NKE","CL","MDLZ","MO","PM","KHC","GIS",
-        "NEE","DUK","SO","AEP","EXC","SRE","D","PCG","ED","XEL",
-        "PLD","AMT","CCI","EQIX","SPG","O","WELL","DLR","PSA","EXR","AVB","EQR","VTR","BXP",
-        "LIN","APD","ECL","FCX","NEM","DOW","DD","PPG","SHW","NUE","VMC","MLM",
-        "T","VZ","DIS","CMCSA","WBD","PARA",
-        "BRK-B","V","MA","UNP","CB","MMC","AON","ICE","CME","SPGI","MCO","TRV","AFL","ALL","MET",
-    ],
-    "NASDAQ": [
-        "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","TSLA","AVGO","QCOM",
-        "ADBE","CRM","ORCL","INTU","NOW","SNOW","PANW","CRWD","FTNT","ZS","OKTA","DDOG","MDB",
-        "TEAM","HUBS","WDAY","VEEV","ANSS","CDNS","KLAC","LRCX","AMAT","MRVL",
-        "AMD","INTC","MU","MCHP","SWKS","MPWR","ON","ADI","TXN","NXPI",
-        "AMGN","GILD","BIIB","REGN","VRTX","MRNA","IDXX","ALGN","ILMN","BMRN","ALNY",
-        "COST","SBUX","PYPL","EBAY","BKNG","EXPE","ABNB","UBER","DASH","CHWY",
-        "COIN","SQ","SOFI","HOOD","AFRM","RIVN","NIO","XPEV","LI","ENPH","SEDG","FSLR","PLUG",
-        "NFLX","SPOT","TTD","ROKU","CSCO","ANET","ZM","DOCU",
-    ],
-    "AMEX": [
-        "GLD","SLV","GDX","GDXJ","IAU","SIVR","PPLT","PALL","RING","SIL",
-        "XLE","OIH","XOP","AMLP","USO","UNG","VXX","UVXY","SVXY",
-        "TQQQ","SQQQ","SPXL","SPXS","UPRO","UDOW","SDOW","TNA","TZA","LABU","LABD",
-        "XLF","XLK","XLV","XLI","XLU","XLRE","XLB","XLY","XLP","XLC",
-        "IWM","IJR","MDY","VBR","VBK","IWS","IWD","IWF",
-        "EEM","EFA","FXI","EWZ","GXC","INDA","EWY","EWJ","VGK","MCHI",
-        "TLT","IEF","SHY","HYG","LQD","JNK","EMB","TIP",
-        "BTG","AG","EGO","PAAS","FSM","HL","CDE",
-        "NOG","SM","CIVI","VTLE","TALO","REI","BORR","TDW",
-    ],
-}
-INDEX_TICKER = {"NYSE": "^NYA",  "NASDAQ": "^IXIC", "AMEX": "^XAX"}
-INDEX_LABEL  = {"NYSE": "NYSE Composite", "NASDAQ": "NASDAQ Composite", "AMEX": "AMEX Composite"}
-INDEX_SYM    = {"NYSE": "ES1",   "NASDAQ": "IXIC",  "AMEX": "XAX"}
-BBG_HI = {"NYSE": "NWHLNYHI", "NASDAQ": "NWHLNDHI", "AMEX": "NWHLAXHI"}
-BBG_LO = {"NYSE": "NWHLNYLO", "NASDAQ": "NWHLNDLO", "AMEX": "NWHLAXLO"}
-BBG_NAME_HI = {"NYSE": "Bloomberg New 52 Week Highs NYSE", "NASDAQ": "Bloomberg New 52 Week Highs NASDAQ", "AMEX": "Bloomberg New 52 Week Highs AMEX"}
-BBG_NAME_LO = {"NYSE": "Bloomberg New 52 Week Lows NYSE",  "NASDAQ": "Bloomberg New 52 Week Lows NASDAQ",  "AMEX": "Bloomberg New 52 Week Lows AMEX"}
+# ── NYSE fallback universe (used if NASDAQ Trader fetch fails) ─────────────────
+NYSE_FALLBACK = [
+    "JPM","BAC","WFC","C","GS","MS","BLK","AXP","USB","PNC","TFC","COF","BK","STT","SCHW",
+    "JNJ","UNH","PFE","MRK","ABT","LLY","TMO","DHR","ELV","CI","HCA","CVS","MCK","CAH",
+    "XOM","CVX","COP","EOG","SLB","BKR","HAL","OXY","PSX","MPC","VLO","DVN",
+    "GE","HON","CAT","DE","BA","LMT","RTX","NOC","UPS","FDX","NSC","CSX","MMM","ITW","EMR",
+    "PG","KO","PEP","WMT","TGT","HD","LOW","MCD","NKE","CL","MDLZ","MO","PM","KHC","GIS",
+    "NEE","DUK","SO","AEP","EXC","SRE","D","PCG","ED","XEL",
+    "PLD","AMT","CCI","EQIX","SPG","O","WELL","DLR","PSA","EXR","AVB","EQR","VTR","BXP",
+    "LIN","APD","ECL","FCX","NEM","DOW","DD","PPG","SHW","NUE","VMC","MLM",
+    "T","VZ","DIS","CMCSA","WBD","PARA",
+    "BRK-B","V","MA","UNP","CB","MMC","AON","ICE","CME","SPGI","MCO","TRV","AFL","ALL","MET",
+]
+INDEX_TICKER = {"NYSE": "^NYA"}
+INDEX_LABEL  = {"NYSE": "NYSE Composite"}
+INDEX_SYM    = {"NYSE": "ES1"}
+BBG_HI      = {"NYSE": "NWHLNYHI"}
+BBG_LO      = {"NYSE": "NWHLNYLO"}
+BBG_NAME_HI = {"NYSE": "Bloomberg New 52 Week Highs NYSE"}
+BBG_NAME_LO = {"NYSE": "Bloomberg New 52 Week Lows NYSE"}
+
+exchange = "NYSE"
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -172,34 +151,25 @@ def safe_float(val):
 @st.cache_data(ttl=86400, show_spinner=False)   # refresh once a day
 def fetch_exchange_tickers(exchange: str) -> list:
     """
-    Pull full exchange listing from NASDAQ Trader (~2,400 NYSE tickers).
-    Falls back to S&P lists from Wikipedia, then to curated list.
+    Pull full NYSE listing from NASDAQ Trader.
+    Falls back to S&P lists from Wikipedia, then to curated NYSE list.
     """
     import requests
     from io import StringIO
 
-    # ── Primary: NASDAQ Trader official daily file ────────────────────────────
+    # ── Primary: NASDAQ Trader official daily file (NYSE = code "N") ─────────
     try:
-        if exchange == "NASDAQ":
-            url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            df = pd.read_csv(StringIO(r.text), sep="|")
-            mask = (df["Test Issue"] == "N") & (df["Symbol"].str.match(r"^[A-Z]{1,5}$"))
-            return df[mask]["Symbol"].tolist()
-        else:
-            exchange_code = {"NYSE": "N", "AMEX": "A"}
-            url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
-            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            df = pd.read_csv(StringIO(r.text), sep="|")
-            code = exchange_code.get(exchange, "N")
-            mask = (
-                (df["Exchange"] == code) &
-                (df["Test Issue"] == "N") &
-                (df["ACT Symbol"].str.match(r"^[A-Z]{1,5}$"))
-            )
-            tickers = df[mask]["ACT Symbol"].tolist()
-            if len(tickers) > 500:   # sanity check — should be ~2,400
-                return tickers
+        url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        df = pd.read_csv(StringIO(r.text), sep="|")
+        mask = (
+            (df["Exchange"] == "N") &
+            (df["Test Issue"] == "N") &
+            (df["ACT Symbol"].str.match(r"^[A-Z]{1,5}$"))
+        )
+        tickers = df[mask]["ACT Symbol"].tolist()
+        if len(tickers) > 500:
+            return tickers
     except Exception:
         pass
 
@@ -298,12 +268,10 @@ def fetch_exchange_tickers(exchange: str) -> list:
     if tickers:
         combined = list(dict.fromkeys(tickers + EXTRA_NYSE))
         return combined
-    return list(dict.fromkeys(EXCHANGE_TICKERS[exchange] + EXTRA_NYSE))
+    return list(dict.fromkeys(NYSE_FALLBACK + EXTRA_NYSE))
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    exchange  = st.selectbox("Exchange", ["NYSE", "NASDAQ", "AMEX"], index=0)
-    st.markdown("---")
     smoothing = st.slider("Smoothing (day MA)", 1, 10, 1)
 
     st.markdown("---")
