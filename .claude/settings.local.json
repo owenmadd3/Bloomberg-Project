@@ -39,7 +39,10 @@
       "Bash(python3 data/new_highs_lows.py)",
       "Bash(sed -i '' 's/st\\\\.plotly_chart\\(fig, width=\"stretch\",/st.plotly_chart\\(fig, use_container_width=True,/' '/Users/owenmadden/Desktop/Bloomberg Project/data/new_highs_lows.py')",
       "Bash(sed -i '' 's/width=\"stretch\", height=/use_container_width=True, height=/g' '/Users/owenmadden/Desktop/Bloomberg Project/data/new_highs_lows.py')",
-      "Bash(sed -i '' 's/use_container_width=True,$/use_container_width=True,/g' '/Users/owenmadden/Desktop/Bloomberg Project/data/new_highs_lows.py')"
+      "Bash(sed -i '' 's/use_container_width=True,$/use_container_width=True,/g' '/Users/owenmadden/Desktop/Bloomberg Project/data/new_highs_lows.py')",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
