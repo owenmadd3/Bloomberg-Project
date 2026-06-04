@@ -8,15 +8,8 @@ from datetime import timezone
 
 st.set_page_config(page_title="52-Week New Highs / New Lows", page_icon=None, layout="wide")
 
-# Auto-refresh — only runs during market hours (9:30–16:00 ET Mon–Fri)
-try:
-    from streamlit_autorefresh import st_autorefresh
-    _now = datetime.now(timezone.utc)
-    _market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)
-    if _market_open:
-        st_autorefresh(interval=15_000, key="live_refresh")
-except Exception:
-    _market_open = False
+_now = datetime.now(timezone.utc)
+_market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)
 
 st.markdown("""
 <style>
@@ -294,19 +287,9 @@ date_range_str = (
 )
 
 # ── Header — plain Streamlit, no HTML ────────────────────────────────────────
-_live_badge = (
-    "<span style='background:#1a3a1a;color:#00e676;font-size:11px;padding:2px 7px;"
-    "border-radius:3px;font-family:monospace;margin-left:12px'>● LIVE</span>"
-    if _market_open else
-    "<span style='background:#2a2a2a;color:#888;font-size:11px;padding:2px 7px;"
-    "border-radius:3px;font-family:monospace;margin-left:12px'>MARKET CLOSED</span>"
-)
-_updated = datetime.now().strftime("%I:%M:%S %p")
 st.markdown(
     f"### {INDEX_SYM[exchange]} Index &nbsp;&nbsp; {idx_last:,.2f} &nbsp;&nbsp; "
-    f"<span style='color:{chg_color}'>{chg_sign}{idx_chg:,.2f} ({chg_sign}{idx_pct:.2f}%)</span>"
-    f"{_live_badge}"
-    f"<span style='color:#555;font-size:11px;font-family:monospace;margin-left:10px'>Updated {_updated}</span>",
+    f"<span style='color:{chg_color}'>{chg_sign}{idx_chg:,.2f} ({chg_sign}{idx_pct:.2f}%)</span>",
     unsafe_allow_html=True,
 )
 st.markdown(f"Op **{idx_op:,.2f}** &nbsp; Hi **{idx_hi:,.2f}** &nbsp; Lo **{idx_lo:,.2f}** "

@@ -3,4 +3,3 @@ yfinance
 plotly
 pandas
 requests
-streamlit-autorefresh
