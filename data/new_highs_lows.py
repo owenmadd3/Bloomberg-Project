@@ -13,8 +13,8 @@ _market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)
 
 st.markdown("""
 <style>
-  .stApp { background-color: #0a0a0a; color: #e0e0e0; }
-  .stApp header { background-color: #0a0a0a; }
+  .stApp { background-color: #ffffff; color: #111111; }
+  .stApp header { background-color: #ffffff; }
   .block-container { padding-top: 2rem; padding-bottom: 1rem; }
   /* sidebar info panel */
   .bbg-field-row {
@@ -22,9 +22,14 @@ st.markdown("""
     font-family: monospace; font-size: 11px;
     padding: 3px 0; border-bottom: 1px solid #1e1e1e;
   }
-  .bbg-field-key { color: #777; }
-  .bbg-field-val { color: #e0e0e0; }
-  .bbg-field-val-y { color: #ffd600; }
+  .bbg-field-key { color: #666; }
+  .bbg-field-val { color: #111; }
+  .bbg-field-val-y { color: #b8860b; }
+  section[data-testid="stSidebar"] { background-color: #f5f5f5; }
+  div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { background-color: #f0f0f0 !important; color: #111 !important; border: 1px solid #ccc !important; }
+  div[data-testid="stSelectbox"] div[data-baseweb="select"] span { color: #111 !important; }
+  div[data-testid="stDataFrame"] * { color: #111 !important; }
+  div[data-testid="stTabs"] button { color: #111 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -483,21 +488,21 @@ fig.add_trace(go.Scatter(
 ), row=2, col=1)
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-spike = dict(showspikes=True, spikecolor="#444", spikethickness=1, spikedash="dot", spikemode="across")
+spike = dict(showspikes=True, spikecolor="#aaa", spikethickness=1, spikedash="dot", spikemode="across")
 ax_base = dict(
-    showgrid=True, gridcolor="#161616", gridwidth=1,
-    zeroline=False, linecolor="#2a2a2a", showline=True,
-    tickfont=dict(color="#666", size=10, family="monospace"),
+    showgrid=True, gridcolor="#e8e8e8", gridwidth=1,
+    zeroline=False, linecolor="#ccc", showline=True,
+    tickfont=dict(color="#555", size=10, family="monospace"),
     fixedrange=False, **spike,
 )
 
 fig.update_layout(
-    plot_bgcolor="#0d0d0d", paper_bgcolor="#0a0a0a",
-    font=dict(color="#aaa", family="monospace"),
+    plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
+    font=dict(color="#333", family="monospace"),
     hovermode="x unified", dragmode="pan",
     legend=dict(
-        bgcolor="rgba(13,13,13,0.85)", bordercolor="#2a2a2a", borderwidth=1,
-        font=dict(color="#ccc", size=10, family="monospace"),
+        bgcolor="rgba(255,255,255,0.9)", bordercolor="#ddd", borderwidth=1,
+        font=dict(color="#333", size=10, family="monospace"),
         orientation="h", x=0, y=1.01, traceorder="reversed",
     ),
     margin=dict(l=55, r=55, t=40, b=10),
@@ -509,9 +514,9 @@ fig.update_layout(
 fig.update_yaxes(side="right", row=1, col=1, **ax_base)
 fig.update_yaxes(side="right", row=2, col=1, **ax_base)
 
-fig.update_xaxes(showgrid=True, gridcolor="#161616", tickfont=dict(color="#666", size=10, family="monospace"),
+fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
                  rangeslider_visible=False, **spike, row=1, col=1)
-fig.update_xaxes(showgrid=True, gridcolor="#161616", tickfont=dict(color="#666", size=10, family="monospace"),
+fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
                  rangeslider_visible=False, **spike, row=2, col=1)
 
 st.plotly_chart(fig, use_container_width=True, config={
