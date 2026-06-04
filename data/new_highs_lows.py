@@ -115,7 +115,7 @@ def compute_breadth(price_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records).set_index("date")
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_constituents(price_df: pd.DataFrame, as_of: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def get_constituents(price_df: pd.DataFrame, as_of: str):
     """Return (highs_df, lows_df) for a given date string YYYY-MM-DD."""
     if as_of not in price_df.index:
         # fall back to last available date
