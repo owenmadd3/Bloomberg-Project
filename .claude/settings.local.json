@@ -42,7 +42,8 @@
       "Bash(sed -i '' 's/use_container_width=True,$/use_container_width=True,/g' '/Users/owenmadden/Desktop/Bloomberg Project/data/new_highs_lows.py')",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(pkill -f \"finance_tools.py\")"
     ]
   }
 }

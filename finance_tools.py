@@ -608,37 +608,53 @@ def render_edgar_table(df):
     st.markdown(f'<div style="overflow-x:auto; background:#ffffff; border-radius:6px; border:1px solid #e2e8f0; padding:4px;"><table class="fin-table"><thead><tr><th>Line Item</th>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>', unsafe_allow_html=True)
 
 # ── Data fetchers ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_info(ticker):
-    return yf.Ticker(ticker).info
+import time
 
-@st.cache_data(ttl=60, show_spinner=False)
+def _yf_with_retry(fn, retries=4, base_delay=3):
+    """Call fn(), retrying on rate-limit (429 / TooManyRequests) with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e).lower()
+            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
+                if attempt < retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+            raise
+    raise RuntimeError("Rate limited by Yahoo Finance — please wait a moment and try again.")
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_info(ticker):
+    return _yf_with_retry(lambda: yf.Ticker(ticker).info)
+
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker, period="1y", interval="1d"):
     prepost = interval in ("1m","2m","5m","15m","30m","60m","90m","1h")
-    return yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost)
-
-@st.cache_data(ttl=300)
-def fetch_financials(ticker):
-    t = yf.Ticker(ticker)
-    return t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow
-
-@st.cache_data(ttl=300)
-def fetch_earnings(ticker):
-    t = yf.Ticker(ticker)
-    return t.earnings_history, t.calendar
+    return _yf_with_retry(lambda: yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost))
 
 @st.cache_data(ttl=600)
+def fetch_financials(ticker):
+    t = yf.Ticker(ticker)
+    return _yf_with_retry(lambda: (t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow))
+
+@st.cache_data(ttl=600)
+def fetch_earnings(ticker):
+    t = yf.Ticker(ticker)
+    return _yf_with_retry(lambda: (t.earnings_history, t.calendar))
+
+@st.cache_data(ttl=900)
 def fetch_news(ticker):
-    return yf.Ticker(ticker).news
+    return _yf_with_retry(lambda: yf.Ticker(ticker).news)
 
 @st.cache_data(ttl=3600)
 def fetch_analyst(ticker):
     t = yf.Ticker(ticker)
-    return t.analyst_price_targets, t.recommendations_summary
+    return _yf_with_retry(lambda: (t.analyst_price_targets, t.recommendations_summary))
 
 @st.cache_data(ttl=3600)
 def fetch_insider(ticker):
-    return yf.Ticker(ticker).insider_transactions
+    return _yf_with_retry(lambda: yf.Ticker(ticker).insider_transactions)
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
