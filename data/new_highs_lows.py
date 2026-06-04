@@ -112,14 +112,15 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
 
     def build_table(mask, roll_ref, label):
         tickers = today_row[mask].index.tolist()
+        if not tickers:
+            return pd.DataFrame(columns=["Ticker", "Price", f"52W {label}", f"% vs 52W {label}"])
         rows = []
         for t in tickers:
             price    = round(float(today_row[t]), 2)
             ref      = round(float(roll_ref[t]), 2)
             chg_52   = round((price / ref - 1) * 100, 2) if ref else 0
             rows.append({"Ticker": t, "Price": price, f"52W {label}": ref, f"% vs 52W {label}": chg_52})
-        df = pd.DataFrame(rows).sort_values("Price", ascending=False).reset_index(drop=True)
-        return df
+        return pd.DataFrame(rows).sort_values("Price", ascending=False).reset_index(drop=True)
 
     hi_df = build_table(hi_mask, roll_high, "High")
     lo_df = build_table(lo_mask, roll_low,  "Low")
