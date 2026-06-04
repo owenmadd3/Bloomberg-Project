@@ -698,26 +698,43 @@ def compute_valuation_ratios(ticker):
     except Exception:
         return {}
 
-_VALUATION_KEYWORDS = {
-    "p/b": "P/B Ratio", "price to book": "P/B Ratio", "price-to-book": "P/B Ratio",
-    "pb ratio": "P/B Ratio", "book value ratio": "P/B Ratio",
-    "p/s": "P/S Ratio", "price to sales": "P/S Ratio", "price-to-sales": "P/S Ratio",
-    "ps ratio": "P/S Ratio", "price to revenue": "P/S Ratio",
-    "p/e": "P/E Ratio", "price to earnings": "P/E Ratio", "pe ratio": "P/E Ratio",
-    "price earnings": "P/E Ratio",
-    "p/fcf": "P/FCF Ratio", "price to free cash flow": "P/FCF Ratio",
-    "ev/ebitda": "EV/EBITDA", "ev ebitda": "EV/EBITDA",
-    "enterprise value to ebitda": "EV/EBITDA",
-    "enterprise value": "Enterprise Value",
-    "market cap": "Market Cap", "market capitalization": "Market Cap",
-}
-
 def _valuation_ratio_requested(question):
-    """Returns the specific ratio name if the question asks for a valuation ratio, else None."""
+    """
+    Returns the specific ratio name if the question asks for a valuation ratio, else None.
+    Uses word-presence checks rather than exact substrings so natural phrasing always matches.
+    """
     q = question.lower()
-    for kw, ratio in sorted(_VALUATION_KEYWORDS.items(), key=lambda x: -len(x[0])):
-        if kw in q:
-            return ratio
+    has = lambda *words: all(w in q for w in words)
+    has_any = lambda *phrases: any(p in q for p in phrases)
+
+    # EV/EBITDA — check before "enterprise value" alone
+    if has_any("ev/ebitda", "ev ebitda") or (has("enterprise", "ebitda")):
+        return "EV/EBITDA"
+
+    # Enterprise Value (without EBITDA)
+    if has("enterprise", "value") and "ebitda" not in q:
+        return "Enterprise Value"
+
+    # Market Cap
+    if has_any("market cap", "market capitalization") or has("market", "cap") or has("market", "value"):
+        return "Market Cap"
+
+    # P/B — price + book (any phrasing)
+    if has_any("p/b", "pb ratio") or (has("price", "book")) or has("book", "value", "ratio"):
+        return "P/B Ratio"
+
+    # P/FCF — check before P/S so "free cash flow" doesn't fall into sales
+    if has_any("p/fcf", "price/fcf") or has("price", "free", "cash"):
+        return "P/FCF Ratio"
+
+    # P/S — price + sales or revenue
+    if has_any("p/s", "ps ratio") or has("price", "sales") or has("price", "revenue"):
+        return "P/S Ratio"
+
+    # P/E — price + earnings (guard against matching "price book" already caught above)
+    if has_any("p/e", "pe ratio") or has("price", "earnings") or has("price", "earning"):
+        return "P/E Ratio"
+
     return None
 
 def extract_edgar_annual(facts, concept_map):
