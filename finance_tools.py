@@ -245,6 +245,14 @@ SEARCH_KEYWORD_MAP = {
     "5-year pretax net income":      "5-Year Avg Pretax Income",
     "average pretax net income":     "5-Year Avg Pretax Income",
     "avg pretax net income":         "5-Year Avg Pretax Income",
+    "earnings yield":                "Earnings Yield %",
+    "earning yield":                 "Earnings Yield %",
+    "earnings yield %":              "Earnings Yield %",
+    "eps yield":                     "Earnings Yield %",
+    "e/p ratio":                     "Earnings Yield %",
+    "e/p":                           "Earnings Yield %",
+    "inverse pe":                    "Earnings Yield %",
+    "inverse p/e":                   "Earnings Yield %",
     "10 year roe":                   "10-Year Avg ROE %",
     "10yr roe":                      "10-Year Avg ROE %",
     "10-year roe":                   "10-Year Avg ROE %",
@@ -490,7 +498,7 @@ def _add_derived_metrics(df):
         df.loc["Debt/Equity"] = total_debt / eq
     return df
 
-RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %","5-Year Avg Pretax Income"}
+RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %","5-Year Avg Pretax Income","Earnings Yield %"}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_10yr_roe(ticker):
@@ -544,6 +552,34 @@ def _is_5yr_pretax_query(question):
     has_pretax = "pretax" in q or "pre-tax" in q or "pre tax" in q
     has_income = "income" in q or "net income" in q or "earnings" in q or "profit" in q
     return has_5 and has_pretax and has_income
+
+@st.cache_data(ttl=120, show_spinner=False)
+def compute_earnings_yield(ticker):
+    """Returns (earnings_yield_pct, eps, price) using most recent EDGAR EPS and current price."""
+    try:
+        price_data = fetch_price_data(ticker)
+        price = price_data.get("currentPrice")
+        if not price or price <= 0:
+            return None, None, None
+        cik = get_cik(ticker)
+        if not cik:
+            return None, None, None
+        facts = get_edgar_facts(cik)
+        df = extract_edgar_annual(facts, EDGAR_INCOME)
+        if df.empty or "EPS Diluted" not in df.index:
+            return None, None, None
+        row = df.loc["EPS Diluted"].dropna()
+        if row.empty:
+            return None, None, None
+        eps = float(row[max(row.index)])
+        earnings_yield = (eps / price) * 100
+        return round(earnings_yield, 4), round(eps, 2), round(price, 2)
+    except Exception:
+        return None, None, None
+
+def _is_earnings_yield_query(question):
+    q = question.lower()
+    return "earnings yield" in q or "earning yield" in q or "eps yield" in q or (("e/p" in q) and ("ratio" in q or "yield" in q))
 
 def extract_edgar_annual(facts, concept_map):
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -921,8 +957,25 @@ if ai_question and search_btn:
                         s_name = meta.get("name") or search_ticker
                     except Exception:
                         s_name = search_ticker
+                # ── Earnings Yield — special path ─────────────────────────
+                if _is_earnings_yield_query(ai_question):
+                    ey, eps, price = compute_earnings_yield(search_ticker)
+                    if ey is not None:
+                        ey_color = "#16a34a" if ey >= 0 else "#dc2626"
+                        ey_sign  = "+" if ey >= 0 else ""
+                        pe_str   = f"{1/(ey/100):.1f}x" if ey != 0 else "N/A"
+                        st.markdown(f"""
+                        <div class="answer-box">
+                            <div class="answer-label">{s_name} ({search_ticker}) · SEC EDGAR 10-K + Live Price</div>
+                            <div class="answer-item">Earnings Yield (EPS ÷ Price)</div>
+                            <div class="answer-value" style="color:{ey_color};">{ey_sign}{ey:.2f}%</div>
+                            <div class="answer-meta">EPS (diluted): ${eps:.2f} &nbsp;·&nbsp; Price: ${price:,.2f} &nbsp;·&nbsp; Implied P/E: {pe_str}</div>
+                        </div>""", unsafe_allow_html=True)
+                    else:
+                        st.info(f"Earnings yield data not available for {s_name} ({search_ticker}) — EPS or price data missing.")
+
                 # ── 5-Year Avg Pretax Income — special path ───────────────
-                if _is_5yr_pretax_query(ai_question):
+                elif _is_5yr_pretax_query(ai_question):
                     avg_pt, pt_by_year = compute_5yr_pretax_income(search_ticker)
                     if avg_pt is not None and pt_by_year:
                         avg_color = "#16a34a" if avg_pt >= 0 else "#dc2626"
@@ -1203,6 +1256,7 @@ def show_profile(ticker):
         w52_low  = float(hist_52["Low"].min())  if not hist_52.empty else None
 
         st.markdown('<div class="section-header">Key Statistics</div>', unsafe_allow_html=True)
+        ey, ey_eps, ey_price = compute_earnings_yield(ticker)
         c1, c2 = st.columns(2)
         with c1:
             metric_card("52-Wk High", fmt(w52_high, prefix="$"))
@@ -1211,6 +1265,10 @@ def show_profile(ticker):
         with c2:
             metric_card("Volume",     f"{volume:,}" if volume else "N/A")
             metric_card("Prev Close", fmt(prev_close, prefix="$"))
+            if ey is not None:
+                ey_sign = "+" if ey >= 0 else ""
+                pe_impl = f"  (P/E {1/(ey/100):.1f}x)" if ey != 0 else ""
+                metric_card("Earnings Yield", f"{ey_sign}{ey:.2f}%{pe_impl}")
 
         # 10-Year ROE
         avg_roe, roe_by_year = compute_10yr_roe(ticker)
