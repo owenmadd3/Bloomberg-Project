@@ -393,23 +393,18 @@ date_range_str = (
     if not idx_trim.empty else ""
 )
 
-@st.cache_data(ttl=30, show_spinner=False)
-def get_live_index_price(ticker: str):
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        price = getattr(fi, "last_price", None)
-        prev  = getattr(fi, "previous_close", None)
-        open_ = getattr(fi, "open", None)
-        high  = getattr(fi, "day_high", None)
-        low   = getattr(fi, "day_low", None)
-        return price, prev, open_, high, low
-    except Exception:
-        return None, None, None, None, None
-
 # ── Header — live-refreshing fragment ─────────────────────────────────────────
 @st.fragment(run_every=30)
 def render_index_header():
-    live_price, live_prev, live_open, live_high, live_low = get_live_index_price(index_sym)
+    try:
+        fi = yf.Ticker(index_sym).fast_info
+        live_price = getattr(fi, "last_price", None)
+        live_prev  = getattr(fi, "previous_close", None)
+        live_open  = getattr(fi, "open", None)
+        live_high  = getattr(fi, "day_high", None)
+        live_low   = getattr(fi, "day_low", None)
+    except Exception:
+        live_price = live_prev = live_open = live_high = live_low = None
 
     price  = live_price  if live_price  is not None else idx_last
     prev   = live_prev   if live_prev   is not None else idx_prev
