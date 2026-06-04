@@ -1386,7 +1386,9 @@ def show_profile(ticker):
                     st.markdown(f"<p style='color:#475569;line-height:1.75;font-size:13px;'>{summary_text}</p>", unsafe_allow_html=True)
 
         except Exception as e:
+            import traceback
             st.error(f"Error loading {ticker}: {e}")
+            st.code(traceback.format_exc())
 
 if st.session_state.get("open_ticker"):
     ticker_to_show = st.session_state["open_ticker"]
