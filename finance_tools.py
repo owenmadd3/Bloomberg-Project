@@ -7,47 +7,12 @@ import re
 import requests
 import time
 import os
-import pickle
-import hashlib
 from difflib import get_close_matches
 
-# ── Shared disk cache (avoids duplicate Yahoo Finance calls across apps) ────────
-_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".yf_cache")
-os.makedirs(_CACHE_DIR, exist_ok=True)
-
-def _cache_get(key, ttl):
-    path = os.path.join(_CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".pkl")
-    if os.path.exists(path):
-        age = time.time() - os.path.getmtime(path)
-        if age < ttl:
-            try:
-                with open(path, "rb") as f:
-                    return True, pickle.load(f)
-            except Exception:
-                pass
-    return False, None
-
-def _cache_set(key, value):
-    path = os.path.join(_CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".pkl")
-    try:
-        with open(path, "wb") as f:
-            pickle.dump(value, f)
-    except Exception:
-        pass
-
-def _yf_with_retry(fn, retries=5, base_delay=4):
-    """Call fn(), retrying on rate-limit with exponential backoff."""
-    for attempt in range(retries):
-        try:
-            return fn()
-        except Exception as e:
-            msg = str(e).lower()
-            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
-                if attempt < retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
-                    continue
-            raise
-    raise RuntimeError("Rate limited by Yahoo Finance — please wait a moment and try again.")
+try:
+    from yfinance.exceptions import YFRateLimitError
+except ImportError:
+    YFRateLimitError = None
 
 st.set_page_config(
     page_title="Finance Tools",
@@ -649,59 +614,46 @@ def render_edgar_table(df):
         rows_html += f"<tr><td>{label}</td>{cells}</tr>"
     st.markdown(f'<div style="overflow-x:auto; background:#ffffff; border-radius:6px; border:1px solid #e2e8f0; padding:4px;"><table class="fin-table"><thead><tr><th>Line Item</th>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>', unsafe_allow_html=True)
 
-# ── Data fetchers (disk-cached so all running apps share results) ───────────────
+# ── Data fetchers ─────────────────────────────────────────────────────────────
+# st.cache_data persists across all users of the deployed app on Streamlit Cloud,
+# dramatically reducing the number of Yahoo Finance calls made.
+
+def _is_rate_limit(e):
+    if YFRateLimitError and isinstance(e, YFRateLimitError):
+        return True
+    return any(s in str(e).lower() for s in ("too many requests", "rate limit", "429", "yfratelimiterror"))
+
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_info(ticker):
-    hit, val = _cache_get(f"info:{ticker}", ttl=120)
-    if hit: return val
-    result = _yf_with_retry(lambda: yf.Ticker(ticker).info)
-    _cache_set(f"info:{ticker}", result)
-    return result
+    return yf.Ticker(ticker).info
 
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker, period="1y", interval="1d"):
-    hit, val = _cache_get(f"hist:{ticker}:{period}:{interval}", ttl=60)
-    if hit: return val
     prepost = interval in ("1m","2m","5m","15m","30m","60m","90m","1h")
-    result = _yf_with_retry(lambda: yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost))
-    _cache_set(f"hist:{ticker}:{period}:{interval}", result)
-    return result
+    return yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost)
 
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_financials(ticker):
-    hit, val = _cache_get(f"fin:{ticker}", ttl=600)
-    if hit: return val
     t = yf.Ticker(ticker)
-    result = _yf_with_retry(lambda: (t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow))
-    _cache_set(f"fin:{ticker}", result)
-    return result
+    return t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow
 
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_earnings(ticker):
-    hit, val = _cache_get(f"earn:{ticker}", ttl=600)
-    if hit: return val
     t = yf.Ticker(ticker)
-    result = _yf_with_retry(lambda: (t.earnings_history, t.calendar))
-    _cache_set(f"earn:{ticker}", result)
-    return result
+    return t.earnings_history, t.calendar
 
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_news(ticker):
-    hit, val = _cache_get(f"news:{ticker}", ttl=900)
-    if hit: return val
-    result = _yf_with_retry(lambda: yf.Ticker(ticker).news)
-    _cache_set(f"news:{ticker}", result)
-    return result
+    return yf.Ticker(ticker).news
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_analyst(ticker):
-    hit, val = _cache_get(f"analyst:{ticker}", ttl=3600)
-    if hit: return val
     t = yf.Ticker(ticker)
-    result = _yf_with_retry(lambda: (t.analyst_price_targets, t.recommendations_summary))
-    _cache_set(f"analyst:{ticker}", result)
-    return result
+    return t.analyst_price_targets, t.recommendations_summary
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_insider(ticker):
-    hit, val = _cache_get(f"insider:{ticker}", ttl=3600)
-    if hit: return val
-    result = _yf_with_retry(lambda: yf.Ticker(ticker).insider_transactions)
-    _cache_set(f"insider:{ticker}", result)
-    return result
+    return yf.Ticker(ticker).insider_transactions
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -1386,9 +1338,10 @@ def show_profile(ticker):
                     st.markdown(f"<p style='color:#475569;line-height:1.75;font-size:13px;'>{summary_text}</p>", unsafe_allow_html=True)
 
         except Exception as e:
-            import traceback
-            st.error(f"Error loading {ticker}: {e}")
-            st.code(traceback.format_exc())
+            if _is_rate_limit(e):
+                st.warning("⚠️ Yahoo Finance is rate limiting requests right now. Please wait 30–60 seconds and try again.")
+            else:
+                st.error(f"Error loading {ticker}: {e}")
 
 if st.session_state.get("open_ticker"):
     ticker_to_show = st.session_state["open_ticker"]
