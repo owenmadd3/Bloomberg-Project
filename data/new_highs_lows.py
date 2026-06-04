@@ -174,42 +174,31 @@ def safe_float(val):
 @st.cache_data(ttl=86400, show_spinner=False)   # refresh once a day
 def fetch_exchange_tickers(exchange: str) -> list:
     """
-    Pull full exchange listing from NASDAQ Trader (official daily file).
-    Returns clean common-stock tickers only (no warrants/rights/test issues).
-    Falls back to curated list if the fetch fails.
+    Pull S&P 500 + 400 + 600 from Wikipedia (~1,500 tickers).
+    Fast enough for Streamlit Cloud; falls back to curated list on failure.
     """
     import requests
     from io import StringIO
 
-    exchange_code = {"NYSE": "N", "NASDAQ": "Q", "AMEX": "A"}
+    urls = [
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
+    ]
+    tickers = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            df = pd.read_html(StringIO(r.text))[0]
+            col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+            tickers += df[col].str.replace(".", "-", regex=False).tolist()
+        except Exception:
+            pass
 
-    # otherlisted.txt covers NYSE, AMEX, ARCA; nasdaqlisted.txt covers NASDAQ
-    if exchange == "NASDAQ":
-        url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-    else:
-        url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
-
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        df = pd.read_csv(StringIO(r.text), sep="|")
-
-        if exchange == "NASDAQ":
-            # nasdaqlisted has no Exchange column — all rows are NASDAQ
-            mask = (
-                (df["Test Issue"] == "N") &
-                (df["Symbol"].str.match(r"^[A-Z]{1,5}$"))
-            )
-            return df[mask]["Symbol"].tolist()
-        else:
-            code = exchange_code.get(exchange, "N")
-            mask = (
-                (df["Exchange"] == code) &
-                (df["Test Issue"] == "N") &
-                (df["ACT Symbol"].str.match(r"^[A-Z]{1,5}$"))
-            )
-            return df[mask]["ACT Symbol"].tolist()
-    except Exception:
-        return EXCHANGE_TICKERS[exchange]   # fallback to curated list
+    if tickers:
+        return list(dict.fromkeys(tickers))   # deduplicate
+    return EXCHANGE_TICKERS[exchange]         # fallback
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
