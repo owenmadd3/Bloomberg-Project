@@ -393,25 +393,57 @@ date_range_str = (
     if not idx_trim.empty else ""
 )
 
-# ── Header — plain Streamlit, no HTML ────────────────────────────────────────
-st.markdown(
-    f"### {INDEX_SYM[exchange]} Index &nbsp;&nbsp; {idx_last:,.2f} &nbsp;&nbsp; "
-    f"<span style='color:{chg_color}'>{chg_sign}{idx_chg:,.2f} ({chg_sign}{idx_pct:.2f}%)</span>",
-    unsafe_allow_html=True,
-)
-st.markdown(f"Op **{idx_op:,.2f}** &nbsp; Hi **{idx_hi:,.2f}** &nbsp; Lo **{idx_lo:,.2f}** "
-            f"&nbsp; Prev **{idx_prev:,.2f}** &nbsp;&nbsp; `{date_range_str}`",
-            unsafe_allow_html=True)
-st.markdown(
-    f"<small style='color:#888'>"
-    f"**{BBG_HI[exchange]}** Mid {last_date_str}: {hi_last} &nbsp;|&nbsp; "
-    f"High {hi_max} ({hi_max_date}) &nbsp;|&nbsp; Avg {hi_avg} &nbsp;|&nbsp; Low {hi_min} ({hi_min_date})"
-    f" &nbsp;&nbsp;&nbsp; "
-    f"**{BBG_LO[exchange]}** Mid {last_date_str}: {lo_last} &nbsp;|&nbsp; "
-    f"High {lo_max} ({lo_max_date}) &nbsp;|&nbsp; Avg {lo_avg} &nbsp;|&nbsp; Low {lo_min} ({lo_min_date})"
-    f"</small>",
-    unsafe_allow_html=True,
-)
+@st.cache_data(ttl=30, show_spinner=False)
+def get_live_index_price(ticker: str):
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = getattr(fi, "last_price", None)
+        prev  = getattr(fi, "previous_close", None)
+        open_ = getattr(fi, "open", None)
+        high  = getattr(fi, "day_high", None)
+        low   = getattr(fi, "day_low", None)
+        return price, prev, open_, high, low
+    except Exception:
+        return None, None, None, None, None
+
+# ── Header — live-refreshing fragment ─────────────────────────────────────────
+@st.fragment(run_every=30)
+def render_index_header():
+    live_price, live_prev, live_open, live_high, live_low = get_live_index_price(index_sym)
+
+    price  = live_price  if live_price  is not None else idx_last
+    prev   = live_prev   if live_prev   is not None else idx_prev
+    open_  = live_open   if live_open   is not None else idx_op
+    high   = live_high   if live_high   is not None else idx_hi
+    low    = live_low    if live_low    is not None else idx_lo
+
+    chg   = price - prev if prev else 0
+    pct   = chg / prev * 100 if prev else 0
+    color = "#00e676" if chg >= 0 else "#ff4444"
+    sign  = "+" if chg >= 0 else ""
+
+    st.markdown(
+        f"### {INDEX_SYM[exchange]} Index &nbsp;&nbsp; {price:,.2f} &nbsp;&nbsp; "
+        f"<span style='color:{color}'>{sign}{chg:,.2f} ({sign}{pct:.2f}%)</span>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"Op **{open_:,.2f}** &nbsp; Hi **{high:,.2f}** &nbsp; Lo **{low:,.2f}** "
+        f"&nbsp; Prev **{prev:,.2f}** &nbsp;&nbsp; `{date_range_str}`",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<small style='color:#888'>"
+        f"**{BBG_HI[exchange]}** Mid {last_date_str}: {hi_last} &nbsp;|&nbsp; "
+        f"High {hi_max} ({hi_max_date}) &nbsp;|&nbsp; Avg {hi_avg} &nbsp;|&nbsp; Low {hi_min} ({hi_min_date})"
+        f" &nbsp;&nbsp;&nbsp; "
+        f"**{BBG_LO[exchange]}** Mid {last_date_str}: {lo_last} &nbsp;|&nbsp; "
+        f"High {lo_max} ({lo_max_date}) &nbsp;|&nbsp; Avg {lo_avg} &nbsp;|&nbsp; Low {lo_min} ({lo_min_date})"
+        f"</small>",
+        unsafe_allow_html=True,
+    )
+
+render_index_header()
 
 st.markdown("---")
 
