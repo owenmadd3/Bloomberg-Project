@@ -5,7 +5,49 @@ from datetime import datetime
 import pandas as pd
 import re
 import requests
+import time
+import os
+import pickle
+import hashlib
 from difflib import get_close_matches
+
+# ── Shared disk cache (avoids duplicate Yahoo Finance calls across apps) ────────
+_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".yf_cache")
+os.makedirs(_CACHE_DIR, exist_ok=True)
+
+def _cache_get(key, ttl):
+    path = os.path.join(_CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".pkl")
+    if os.path.exists(path):
+        age = time.time() - os.path.getmtime(path)
+        if age < ttl:
+            try:
+                with open(path, "rb") as f:
+                    return True, pickle.load(f)
+            except Exception:
+                pass
+    return False, None
+
+def _cache_set(key, value):
+    path = os.path.join(_CACHE_DIR, hashlib.md5(key.encode()).hexdigest() + ".pkl")
+    try:
+        with open(path, "wb") as f:
+            pickle.dump(value, f)
+    except Exception:
+        pass
+
+def _yf_with_retry(fn, retries=5, base_delay=4):
+    """Call fn(), retrying on rate-limit with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e).lower()
+            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
+                if attempt < retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+            raise
+    raise RuntimeError("Rate limited by Yahoo Finance — please wait a moment and try again.")
 
 st.set_page_config(
     page_title="Finance Tools",
@@ -607,54 +649,59 @@ def render_edgar_table(df):
         rows_html += f"<tr><td>{label}</td>{cells}</tr>"
     st.markdown(f'<div style="overflow-x:auto; background:#ffffff; border-radius:6px; border:1px solid #e2e8f0; padding:4px;"><table class="fin-table"><thead><tr><th>Line Item</th>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>', unsafe_allow_html=True)
 
-# ── Data fetchers ──────────────────────────────────────────────────────────────
-import time
-
-def _yf_with_retry(fn, retries=4, base_delay=3):
-    """Call fn(), retrying on rate-limit (429 / TooManyRequests) with exponential backoff."""
-    for attempt in range(retries):
-        try:
-            return fn()
-        except Exception as e:
-            msg = str(e).lower()
-            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
-                if attempt < retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
-                    continue
-            raise
-    raise RuntimeError("Rate limited by Yahoo Finance — please wait a moment and try again.")
-
-@st.cache_data(ttl=120, show_spinner=False)
+# ── Data fetchers (disk-cached so all running apps share results) ───────────────
 def fetch_info(ticker):
-    return _yf_with_retry(lambda: yf.Ticker(ticker).info)
+    hit, val = _cache_get(f"info:{ticker}", ttl=120)
+    if hit: return val
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).info)
+    _cache_set(f"info:{ticker}", result)
+    return result
 
-@st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker, period="1y", interval="1d"):
+    hit, val = _cache_get(f"hist:{ticker}:{period}:{interval}", ttl=60)
+    if hit: return val
     prepost = interval in ("1m","2m","5m","15m","30m","60m","90m","1h")
-    return _yf_with_retry(lambda: yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost))
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost))
+    _cache_set(f"hist:{ticker}:{period}:{interval}", result)
+    return result
 
-@st.cache_data(ttl=600)
 def fetch_financials(ticker):
+    hit, val = _cache_get(f"fin:{ticker}", ttl=600)
+    if hit: return val
     t = yf.Ticker(ticker)
-    return _yf_with_retry(lambda: (t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow))
+    result = _yf_with_retry(lambda: (t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow))
+    _cache_set(f"fin:{ticker}", result)
+    return result
 
-@st.cache_data(ttl=600)
 def fetch_earnings(ticker):
+    hit, val = _cache_get(f"earn:{ticker}", ttl=600)
+    if hit: return val
     t = yf.Ticker(ticker)
-    return _yf_with_retry(lambda: (t.earnings_history, t.calendar))
+    result = _yf_with_retry(lambda: (t.earnings_history, t.calendar))
+    _cache_set(f"earn:{ticker}", result)
+    return result
 
-@st.cache_data(ttl=900)
 def fetch_news(ticker):
-    return _yf_with_retry(lambda: yf.Ticker(ticker).news)
+    hit, val = _cache_get(f"news:{ticker}", ttl=900)
+    if hit: return val
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).news)
+    _cache_set(f"news:{ticker}", result)
+    return result
 
-@st.cache_data(ttl=3600)
 def fetch_analyst(ticker):
+    hit, val = _cache_get(f"analyst:{ticker}", ttl=3600)
+    if hit: return val
     t = yf.Ticker(ticker)
-    return _yf_with_retry(lambda: (t.analyst_price_targets, t.recommendations_summary))
+    result = _yf_with_retry(lambda: (t.analyst_price_targets, t.recommendations_summary))
+    _cache_set(f"analyst:{ticker}", result)
+    return result
 
-@st.cache_data(ttl=3600)
 def fetch_insider(ticker):
-    return _yf_with_retry(lambda: yf.Ticker(ticker).insider_transactions)
+    hit, val = _cache_get(f"insider:{ticker}", ttl=3600)
+    if hit: return val
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).insider_transactions)
+    _cache_set(f"insider:{ticker}", result)
+    return result
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
