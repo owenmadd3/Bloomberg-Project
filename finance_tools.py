@@ -9,23 +9,6 @@ import time
 import os
 from difflib import get_close_matches
 
-try:
-    from yfinance.exceptions import YFRateLimitError
-except ImportError:
-    YFRateLimitError = None
-
-# ── Browser-impersonating session (fixes Yahoo Finance blocking cloud IPs) ─────
-try:
-    from curl_cffi import requests as cffi_requests
-    _YF_SESSION = cffi_requests.Session(impersonate="chrome")
-except Exception:
-    _YF_SESSION = None
-
-def _ticker(symbol):
-    """Return a yf.Ticker that uses the curl_cffi session when available."""
-    if _YF_SESSION:
-        return yf.Ticker(symbol, session=_YF_SESSION)
-    return yf.Ticker(symbol)
 
 st.set_page_config(
     page_title="Finance Tools",
@@ -628,45 +611,95 @@ def render_edgar_table(df):
     st.markdown(f'<div style="overflow-x:auto; background:#ffffff; border-radius:6px; border:1px solid #e2e8f0; padding:4px;"><table class="fin-table"><thead><tr><th>Line Item</th>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>', unsafe_allow_html=True)
 
 # ── Data fetchers ─────────────────────────────────────────────────────────────
-# st.cache_data persists across all users of the deployed app on Streamlit Cloud,
-# dramatically reducing the number of Yahoo Finance calls made.
+# yf.download() uses a different Yahoo Finance endpoint that does NOT require
+# cookie/crumb auth — it works reliably on cloud. We use it for all price data.
+# SEC EDGAR (already in use for financial search) handles financial statements.
+# yf.Ticker().info is AVOIDED — that's the endpoint Yahoo blocks on cloud IPs.
 
-def _is_rate_limit(e):
-    if YFRateLimitError and isinstance(e, YFRateLimitError):
-        return True
-    return any(s in str(e).lower() for s in ("too many requests", "rate limit", "429", "yfratelimiterror"))
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_info(ticker):
-    return _ticker(ticker).info
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_price_data(ticker):
+    """Current price + basic stats via yf.download() — works on cloud."""
+    try:
+        df = yf.download(ticker, period="5d", interval="1d", progress=False, auto_adjust=True)
+        if df.empty:
+            return {}
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
+        return {
+            "currentPrice":   float(last["Close"]),
+            "previousClose":  float(prev["Close"]),
+            "dayHigh":        float(last["High"]),
+            "dayLow":         float(last["Low"]),
+            "volume":         int(last["Volume"]),
+            "open":           float(last["Open"]),
+        }
+    except Exception:
+        return {}
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker, period="1y", interval="1d"):
-    prepost = interval in ("1m","2m","5m","15m","30m","60m","90m","1h")
-    return _ticker(ticker).history(period=period, interval=interval, prepost=prepost)
+    """Price history via yf.download() — works on cloud."""
+    try:
+        df = yf.download(ticker, period=period, interval=interval,
+                         progress=False, auto_adjust=True)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_financials(ticker):
-    t = _ticker(ticker)
-    return t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow
-
-@st.cache_data(ttl=900, show_spinner=False)
-def fetch_earnings(ticker):
-    t = _ticker(ticker)
-    return t.earnings_history, t.calendar
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_company_meta(ticker):
+    """Name, sector, industry from SEC EDGAR — no Yahoo auth needed."""
+    try:
+        companies = get_company_list()
+        name = next((n for s, n in companies if s == ticker.upper()), ticker)
+        cik  = get_cik(ticker)
+        sector, industry, website = "", "", ""
+        if cik:
+            r = requests.get(
+                f"https://data.sec.gov/submissions/CIK{cik}.json",
+                headers=EDGAR_HEADERS, timeout=10
+            )
+            if r.ok:
+                d = r.json()
+                name    = d.get("name", name)
+                sic_desc= d.get("sicDescription", "")
+                website = d.get("website", "")
+                sector  = sic_desc
+        return {"name": name, "sector": sector, "industry": industry, "website": website, "cik": cik}
+    except Exception:
+        companies = get_company_list()
+        name = next((n for s, n in companies if s == ticker.upper()), ticker)
+        return {"name": name, "sector": "", "industry": "", "website": "", "cik": None}
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_news(ticker):
-    return _ticker(ticker).news
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_analyst(ticker):
-    t = _ticker(ticker)
-    return t.analyst_price_targets, t.recommendations_summary
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_insider(ticker):
-    return _ticker(ticker).insider_transactions
+    """News headlines via Yahoo RSS — no auth needed."""
+    try:
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        if not r.ok:
+            return []
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(r.text)
+        articles = []
+        for item in root.findall(".//item")[:8]:
+            title = item.findtext("title", "")
+            link  = item.findtext("link", "")
+            pub   = item.findtext("pubDate", "")
+            try:
+                dt_str = pd.to_datetime(pub).strftime("%b %d  %H:%M")
+            except Exception:
+                dt_str = ""
+            if title:
+                articles.append({"title": title, "url": link, "source": "Yahoo Finance", "time": dt_str})
+        return articles
+    except Exception:
+        return []
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -808,8 +841,8 @@ if ai_question and search_btn:
             try:
                 if not s_name or s_name == search_ticker:
                     try:
-                        info = yf.Ticker(search_ticker).info
-                        s_name = info.get("longName") or info.get("shortName") or search_ticker
+                        meta = fetch_company_meta(search_ticker)
+                        s_name = meta.get("name") or search_ticker
                     except Exception:
                         s_name = search_ticker
                 result = None
@@ -819,7 +852,7 @@ if ai_question and search_btn:
                     pass
                 if not result:
                     try:
-                        result = search_yfinance(ai_question, yf.Ticker(search_ticker))
+                        result = search_yfinance(ai_question, yf.Ticker(search_ticker, session=None))
                     except Exception:
                         pass
                 if result:
@@ -909,452 +942,166 @@ elif company_search_btn and company_query:
 @st.dialog("Company Profile", width="large")
 def show_profile(ticker):
     with st.spinner(f"Loading {ticker}…"):
-        try:
-            info = fetch_info(ticker)
-            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-                st.error(f"No data found for **{ticker}**. Check the symbol.")
-                return
+        # ── All data via cloud-safe endpoints (no Yahoo auth required) ──────────
+        price_data = fetch_price_data(ticker)
+        meta       = fetch_company_meta(ticker)
 
-            is_crypto = info.get("quoteType","").upper() == "CRYPTOCURRENCY" or (ticker.endswith("-USD") and "-" in ticker)
+        if not price_data:
+            st.error(f"No price data found for **{ticker}**. Check the ticker symbol.")
+            return
 
-            name     = info.get("longName") or info.get("shortName") or ticker
-            sector   = info.get("sector","N/A")
-            industry = info.get("industry","N/A")
-            exchange = info.get("exchange","N/A")
-            currency = info.get("currency","USD")
-            website  = info.get("website","")
+        name     = meta.get("name", ticker)
+        sector   = meta.get("sector", "")
+        website  = meta.get("website", "")
+        cik      = meta.get("cik")
 
-            price      = info.get("currentPrice") or info.get("regularMarketPrice")
-            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
-            day_high   = info.get("dayHigh") or info.get("regularMarketDayHigh")
-            day_low    = info.get("dayLow") or info.get("regularMarketDayLow")
-            w52_high   = info.get("fiftyTwoWeekHigh")
-            w52_low    = info.get("fiftyTwoWeekLow")
-            volume     = info.get("volume") or info.get("regularMarketVolume")
-            avg_vol    = info.get("averageVolume")
+        price      = price_data.get("currentPrice", 0)
+        prev_close = price_data.get("previousClose", 0)
+        day_high   = price_data.get("dayHigh")
+        day_low    = price_data.get("dayLow")
+        volume     = price_data.get("volume")
+        chg        = price - prev_close if price and prev_close else 0
+        pct_chg    = chg / prev_close * 100 if prev_close else 0
+        sign       = "+" if chg >= 0 else ""
+        clr        = "#22c55e" if chg >= 0 else "#ef4444"
+        arr        = "▲" if chg >= 0 else "▼"
+        range_str  = f"${day_low:,.2f} – ${day_high:,.2f}" if day_low and day_high else "—"
 
-            market_cap   = info.get("marketCap")
-            pe_ratio     = info.get("trailingPE")
-            fwd_pe       = info.get("forwardPE")
-            eps          = info.get("trailingEps")
-            fwd_eps      = info.get("forwardEps")
-            pb           = info.get("priceToBook")
-            ps           = info.get("priceToSalesTrailing12Months")
-            ev_ebitda    = info.get("enterpriseToEbitda")
-            beta         = info.get("beta")
-            revenue      = info.get("totalRevenue")
-            gross_profit = info.get("grossProfits")
-            ebitda_v     = info.get("ebitda")
-            net_income   = info.get("netIncomeToCommon")
-            profit_margin= info.get("profitMargins")
-            op_margin    = info.get("operatingMargins")
-            gross_margin = info.get("grossMargins")
-            roe          = info.get("returnOnEquity")
-            roa          = info.get("returnOnAssets")
-            rev_growth   = info.get("revenueGrowth")
-            earn_growth  = info.get("earningsGrowth")
-            total_cash   = info.get("totalCash")
-            total_debt   = info.get("totalDebt")
-            d2e          = info.get("debtToEquity")
-            curr_ratio   = info.get("currentRatio")
-            fcf_v        = info.get("freeCashflow")
-            div_yield    = info.get("dividendYield")
-            div_rate     = info.get("dividendRate")
-            payout       = info.get("payoutRatio")
+        website_html = (
+            f'<a href="{website}" target="_blank" style="color:#2563eb;font-size:12px;">'
+            f'{website.replace("https://","").replace("http://","").rstrip("/")}</a>'
+        ) if website else ""
 
-            website_html = (
-                f'<a href="{website}" target="_blank" style="color:#2563eb;font-size:12px;">'
-                f'{website.replace("https://","").replace("http://","").rstrip("/")}</a>'
-            ) if website else ""
+        # Header
+        st.markdown(
+            f'<div style="background:#f8fafc;border:none;border-bottom:2px solid #e2e8f0;'
+            f'border-radius:8px 8px 0 0;padding:18px 28px 10px;">'
+            f'<div style="color:#1e3a5c;font-size:26px;font-weight:800;line-height:1.2;margin-bottom:4px;">{name}</div>'
+            f'<div style="color:#64748b;font-size:12px;letter-spacing:0.02em;">{ticker}'
+            + (f'&nbsp;&nbsp;·&nbsp;&nbsp;{sector}' if sector else '') +
+            '</div>'
+            + (f'<div style="margin-top:4px;">{website_html}</div>' if website_html else '') +
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
-            st.markdown(
-                f'<div style="background:#f8fafc;border:none;border-bottom:2px solid #e2e8f0;border-radius:8px 8px 0 0;padding:18px 28px 10px;">'
-                f'<div style="color:#1e3a5c;font-size:26px;font-weight:800;line-height:1.2;margin-bottom:4px;">{name}</div>'
-                f'<div style="color:#64748b;font-size:12px;letter-spacing:0.02em;">{ticker}&nbsp;&nbsp;·&nbsp;&nbsp;{exchange}&nbsp;&nbsp;·&nbsp;&nbsp;{sector} › {industry}</div>'
-                + (f'<div style="margin-top:4px;">{website_html}</div>' if website_html else '') +
-                '</div>',
-                unsafe_allow_html=True,
+        # Price block
+        st.markdown(
+            f'<div style="background:#f8fafc;border-radius:0 0 8px 8px;padding:12px 28px 18px;'
+            f'border-bottom:2px solid #e2e8f0;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;">'
+            f'<span style="color:#1e3a5c;font-size:36px;font-weight:800;letter-spacing:-0.5px;line-height:1;">${price:,.2f}</span>'
+            f'<span style="color:{clr};font-size:16px;font-weight:700;">{arr} {sign}{chg:,.2f} &nbsp; ({sign}{pct_chg:.2f}%)</span>'
+            f'</div>'
+            f'<div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap;">'
+            f'<span style="color:#94a3b8;font-size:11px;">Prev close &nbsp;<b style="color:#64748b;">${prev_close:,.2f}</b></span>'
+            f'<span style="color:#94a3b8;font-size:11px;">Day range &nbsp;<b style="color:#64748b;">{range_str}</b></span>'
+            + (f'<span style="color:#94a3b8;font-size:11px;">Volume &nbsp;<b style="color:#64748b;">{volume:,}</b></span>' if volume else '') +
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Price chart
+        st.markdown('<div class="section-header">Price History</div>', unsafe_allow_html=True)
+        PERIOD_CONFIG = {
+            "1M":  ("1mo", "1d"),
+            "3M":  ("3mo", "1d"),
+            "6M":  ("6mo", "1d"),
+            "1Y":  ("1y",  "1d"),
+            "5Y":  ("5y",  "1wk"),
+            "All": ("max", "1mo"),
+        }
+        period_choice = st.radio("Chart period", list(PERIOD_CONFIG.keys()), horizontal=True, index=3, label_visibility="collapsed")
+        yf_period, yf_interval = PERIOD_CONFIG[period_choice]
+        hist = fetch_history(ticker, yf_period, yf_interval)
+        if not hist.empty:
+            lc  = "#22c55e" if hist["Close"].iloc[-1] >= hist["Close"].iloc[0] else "#ef4444"
+            rgb = "34,197,94" if lc == "#22c55e" else "239,68,68"
+            all_lows  = hist["Low"].dropna()
+            all_highs = hist["High"].dropna()
+            y_range = None
+            if not all_lows.empty and not all_highs.empty:
+                y_min   = float(all_lows.min())
+                y_max   = float(all_highs.max())
+                padding = (y_max - y_min) * 0.15 if y_max > y_min else y_max * 0.01
+                y_range = [y_min - padding, y_max + padding]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=list(hist.index) + list(hist.index[::-1]),
+                y=list(hist["High"]) + list(hist["Low"][::-1]),
+                fill="toself", fillcolor=f"rgba({rgb},0.10)",
+                line=dict(width=0), hoverinfo="skip", showlegend=False,
+            ))
+            fig.add_trace(go.Scatter(
+                x=hist.index, y=hist["Close"],
+                mode="lines", line=dict(color=lc, width=2),
+                hovertemplate="<b>%{x|%b %d, %Y}</b><br>$%{y:.2f}<extra></extra>",
+                connectgaps=True, name="Close",
+            ))
+            fig.update_layout(
+                paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=300, hovermode="x unified", showlegend=False,
             )
+            ax = dict(showgrid=True, gridcolor="#d1d9e0", color="#1e293b",
+                      showline=True, linecolor="#94a3b8", linewidth=1,
+                      zeroline=False, tickfont=dict(size=11, color="#1e293b", family="Inter,sans-serif"))
+            fig.update_xaxes(**ax)
+            fig.update_yaxes(**ax, tickformat="$,.2f", range=y_range)
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.markdown("<p style='color:#64748b;'>No price data available.</p>", unsafe_allow_html=True)
 
-            @st.fragment(run_every=15)
-            def live_price_block():
-                try:
-                    fi  = _ticker(ticker).fast_info
-                    lp  = getattr(fi, "last_price", None) or price
-                    pc  = getattr(fi, "previous_close", None) or prev_close
-                    dh  = getattr(fi, "day_high", None) or day_high
-                    dl  = getattr(fi, "day_low",  None) or day_low
-                    chg = (lp - pc) if lp and pc else 0
-                    pct = (chg / pc * 100) if pc else 0
-                    sign  = "+" if chg >= 0 else ""
-                    clr   = "#22c55e" if chg >= 0 else "#ef4444"
-                    arr   = "▲" if chg >= 0 else "▼"
-                    range_str = f"${dl:,.2f} – ${dh:,.2f}" if dl and dh else "—"
-                except Exception:
-                    lp, pc, chg, pct, sign, clr, arr, range_str = price, prev_close, 0, 0, "", "#94a3b8", "—", "—"
+        # 52-week range from history
+        hist_52 = fetch_history(ticker, "1y", "1d")
+        w52_high = float(hist_52["High"].max()) if not hist_52.empty else None
+        w52_low  = float(hist_52["Low"].min())  if not hist_52.empty else None
 
+        st.markdown('<div class="section-header">Key Statistics</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            metric_card("52-Wk High", fmt(w52_high, prefix="$"))
+            metric_card("52-Wk Low",  fmt(w52_low,  prefix="$"))
+            metric_card("Day Range",  range_str if range_str != "—" else None)
+        with c2:
+            metric_card("Volume",     f"{volume:,}" if volume else "N/A")
+            metric_card("Prev Close", fmt(prev_close, prefix="$"))
+
+        # Financial statements — SEC EDGAR (always works on cloud)
+        st.markdown('<div class="section-header">Financial Statements (SEC EDGAR · back to ~2001)</div>', unsafe_allow_html=True)
+        if cik:
+            try:
+                ef = get_edgar_facts(cik)
+                df_is_e = extract_edgar_annual(ef, EDGAR_INCOME)
+                df_bs_e = extract_edgar_annual(ef, EDGAR_BALANCE)
+                cf_map  = {k: v for k, v in EDGAR_CASHFLOW.items() if v}
+                df_cf_e = extract_edgar_annual(ef, cf_map)
+                if not df_cf_e.empty and "Operating Cash Flow" in df_cf_e.index and "Capital Expenditures" in df_cf_e.index:
+                    df_cf_e.loc["Free Cash Flow"] = df_cf_e.loc["Operating Cash Flow"].subtract(df_cf_e.loc["Capital Expenditures"].abs())
+                    df_cf_e = df_cf_e.reindex([k for k in EDGAR_CASHFLOW if k in df_cf_e.index])
+                h1, h2, h3 = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
+                with h1: render_edgar_table(df_is_e)
+                with h2: render_edgar_table(df_bs_e)
+                with h3: render_edgar_table(df_cf_e)
+            except Exception as e:
+                st.markdown(f"<p style='color:#64748b;'>Financial data unavailable: {e}</p>", unsafe_allow_html=True)
+        else:
+            st.markdown("<p style='color:#64748b;'>SEC EDGAR data not available for this ticker.</p>", unsafe_allow_html=True)
+
+        # News via RSS (no auth)
+        st.markdown('<div class="section-header">Company News</div>', unsafe_allow_html=True)
+        news = fetch_news(ticker)
+        if news:
+            for article in news:
+                t_html = f'<a href="{article["url"]}" target="_blank">{article["title"]}</a>' if article["url"] else article["title"]
                 st.markdown(
-                    f'<div style="background:#f8fafc;border-radius:0 0 8px 8px;padding:12px 28px 18px;'
-                    f'border-bottom:2px solid #e2e8f0;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-                    f'<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;">'
-                    f'<span style="color:#1e3a5c;font-size:36px;font-weight:800;letter-spacing:-0.5px;line-height:1;">{currency} {lp:,.2f}</span>'
-                    f'<span style="color:{clr};font-size:16px;font-weight:700;">{arr} {sign}{chg:,.2f} &nbsp; ({sign}{pct:.2f}%)</span>'
-                    f'</div>'
-                    f'<div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap;">'
-                    f'<span style="color:#94a3b8;font-size:11px;">Prev close &nbsp;<b style="color:#64748b;">{currency} {pc:,.2f}</b></span>'
-                    f'<span style="color:#94a3b8;font-size:11px;">Day range &nbsp;<b style="color:#64748b;">{range_str}</b></span>'
-                    f'</div>'
-                    f'</div>',
+                    f'<div class="news-card"><div class="news-title">{t_html}</div>'
+                    f'<div class="news-meta">{article["source"]}{"&nbsp;·&nbsp;" if article["time"] else ""}{article["time"]}</div></div>',
                     unsafe_allow_html=True,
                 )
-
-            live_price_block()
-
-            st.markdown('<div class="section-header">Price History</div>', unsafe_allow_html=True)
-            PERIOD_CONFIG = {
-                "1D":  ("1d",  "5m",   "<b>%{x|%H:%M}</b><br>$%{y:.2f}"),
-                "5D":  ("5d",  "30m",  "<b>%{x|%b %d %H:%M}</b><br>$%{y:.2f}"),
-                "1M":  ("1mo", "1d",   "<b>%{x|%b %d, %Y}</b><br>$%{y:.2f}"),
-                "3M":  ("3mo", "1d",   "<b>%{x|%b %d, %Y}</b><br>$%{y:.2f}"),
-                "6M":  ("6mo", "1d",   "<b>%{x|%b %d, %Y}</b><br>$%{y:.2f}"),
-                "1Y":  ("1y",  "1d",   "<b>%{x|%b %d, %Y}</b><br>$%{y:.2f}"),
-                "5Y":  ("5y",  "1wk",  "<b>%{x|%b %Y}</b><br>$%{y:.2f}"),
-                "All": ("max", "1mo",  "<b>%{x|%Y}</b><br>$%{y:.2f}"),
-            }
-            period_choice = st.radio("Chart period", list(PERIOD_CONFIG.keys()), horizontal=True, index=5, label_visibility="collapsed")
-
-            @st.fragment(run_every=30)
-            def live_chart(period_choice=period_choice):
-                yf_period, yf_interval, hover_fmt = PERIOD_CONFIG[period_choice]
-                if yf_interval in ("5m","30m"):
-                    fetch_history.clear()
-                hist = fetch_history(ticker, yf_period, yf_interval)
-                if not hist.empty:
-                    if yf_interval in ("5m", "15m", "30m", "1h"):
-                        freq_map = {"5m":"5min","15m":"15min","30m":"30min","1h":"1h"}
-                        full_idx = pd.date_range(hist.index[0], hist.index[-1], freq=freq_map[yf_interval])
-                        hist = hist.reindex(full_idx).ffill()
-                    lc  = "#22c55e" if hist["Close"].iloc[-1] >= hist["Close"].iloc[0] else "#ef4444"
-                    rgb = "34,197,94" if lc == "#22c55e" else "239,68,68"
-                    all_lows  = hist["Low"].dropna()
-                    all_highs = hist["High"].dropna()
-                    if not all_lows.empty and not all_highs.empty:
-                        y_min   = all_lows.min()
-                        y_max   = all_highs.max()
-                        padding = (y_max - y_min) * 0.15 if y_max > y_min else y_max * 0.01
-                        y_range = [y_min - padding, y_max + padding]
-                    else:
-                        y_range = None
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=list(hist.index) + list(hist.index[::-1]),
-                        y=list(hist["High"]) + list(hist["Low"][::-1]),
-                        fill="toself", fillcolor=f"rgba({rgb},0.10)",
-                        line=dict(width=0), hoverinfo="skip", showlegend=False,
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=hist.index, y=hist["Close"],
-                        mode="lines", line=dict(color=lc, width=2),
-                        hovertemplate=hover_fmt + "<extra></extra>",
-                        connectgaps=True, name="Close",
-                    ))
-                    fig.update_layout(
-                        paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
-                        margin=dict(l=10, r=10, t=10, b=10),
-                        height=300, hovermode="x unified", showlegend=False,
-                    )
-                    ax = dict(showgrid=True, gridcolor="#d1d9e0", color="#1e293b",
-                              showline=True, linecolor="#94a3b8", linewidth=1,
-                              zeroline=False, tickfont=dict(size=11, color="#1e293b", family="Inter,sans-serif"))
-                    fig.update_xaxes(**ax)
-                    fig.update_yaxes(**ax, tickformat="$,.2f", range=y_range)
-                    st.plotly_chart(fig, width="stretch")
-                else:
-                    st.markdown("<p style='color:#64748b;'>No price data available.</p>", unsafe_allow_html=True)
-
-            live_chart()
-
-            st.markdown('<div class="section-header">Key Statistics</div>', unsafe_allow_html=True)
-            c1,c2,c3,c4 = st.columns(4)
-            with c1:
-                metric_card("Market Cap", fmt_large(market_cap))
-                metric_card("52-Wk High", fmt(w52_high,prefix="$"))
-                metric_card("52-Wk Low",  fmt(w52_low,prefix="$"))
-            with c2:
-                metric_card("Day Range", f"{fmt(day_low,prefix='$')} – {fmt(day_high,prefix='$')}")
-                metric_card("Volume",    f"{volume:,.0f}" if volume else "N/A")
-                metric_card("Avg Volume",f"{avg_vol:,.0f}" if avg_vol else "N/A")
-            if is_crypto:
-                with c3:
-                    circ = info.get("circulatingSupply")
-                    total_supply = info.get("totalSupply")
-                    max_supply   = info.get("maxSupply")
-                    metric_card("Circulating Supply", f"{circ:,.0f}" if circ else "N/A")
-                    metric_card("Total Supply",        f"{total_supply:,.0f}" if total_supply else "N/A")
-                    metric_card("Max Supply",           f"{max_supply:,.0f}" if max_supply else "∞")
-                with c4:
-                    vol_24h = info.get("volume24Hr") or info.get("regularMarketVolume")
-                    start_d = info.get("startDate")
-                    start_str = datetime.fromtimestamp(start_d).strftime("%b %Y") if start_d else "N/A"
-                    metric_card("24h Volume",  fmt_large(vol_24h) if vol_24h else "N/A")
-                    metric_card("Launch Date", start_str)
-                    metric_card("Beta",        fmt(beta))
-            else:
-                with c3:
-                    metric_card("P/E (TTM)", fmt(pe_ratio))
-                    metric_card("Fwd P/E",   fmt(fwd_pe))
-                    metric_card("P/B",       fmt(pb))
-                with c4:
-                    metric_card("EPS (TTM)", fmt(eps,prefix="$"))
-                    metric_card("Fwd EPS",   fmt(fwd_eps,prefix="$"))
-                    metric_card("Beta",      fmt(beta))
-
-            if not is_crypto:
-                st.markdown('<div class="section-header">Financial Statements (yfinance · ~4 years)</div>', unsafe_allow_html=True)
-                freq = st.radio("Freq", ["Annual","Quarterly"], horizontal=True, label_visibility="collapsed")
-                annual = freq == "Annual"
-                t1,t2,t3 = st.tabs(["Income Statement","Balance Sheet","Cash Flow"])
-                annual_is, qtr_is, annual_bs, qtr_bs, annual_cf, qtr_cf = fetch_financials(ticker)
-                with t1: render_fin_table(annual_is if annual else qtr_is)
-                with t2: render_fin_table(annual_bs if annual else qtr_bs)
-                with t3: render_fin_table(annual_cf if annual else qtr_cf)
-
-                st.markdown('<div class="section-header">Historical Financials (SEC EDGAR · back to ~2001)</div>', unsafe_allow_html=True)
-                try:
-                    cik = get_cik(ticker)
-                    if not cik:
-                        st.markdown("<p style='color:#64748b;'>CIK not found for this ticker.</p>", unsafe_allow_html=True)
-                    else:
-                        ef = get_edgar_facts(cik)
-                        df_is_e = extract_edgar_annual(ef, EDGAR_INCOME)
-                        df_bs_e = extract_edgar_annual(ef, EDGAR_BALANCE)
-                        cf_map  = {k:v for k,v in EDGAR_CASHFLOW.items() if v}
-                        df_cf_e = extract_edgar_annual(ef, cf_map)
-                        if not df_cf_e.empty and "Operating Cash Flow" in df_cf_e.index and "Capital Expenditures" in df_cf_e.index:
-                            df_cf_e.loc["Free Cash Flow"] = df_cf_e.loc["Operating Cash Flow"].subtract(df_cf_e.loc["Capital Expenditures"].abs())
-                            df_cf_e = df_cf_e.reindex([k for k in EDGAR_CASHFLOW if k in df_cf_e.index])
-                        h1e,h2e,h3e = st.tabs(["Income Statement","Balance Sheet","Cash Flow"])
-                        with h1e: render_edgar_table(df_is_e)
-                        with h2e: render_edgar_table(df_bs_e)
-                        with h3e: render_edgar_table(df_cf_e)
-                except Exception as e:
-                    st.markdown(f"<p style='color:#64748b;'>EDGAR unavailable: {e}</p>", unsafe_allow_html=True)
-
-            st.markdown('<div class="section-header">Financial Summary</div>', unsafe_allow_html=True)
-            c1,c2,c3 = st.columns(3)
-            with c1:
-                st.markdown("<p style='color:#94a3b8;font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase;'>Income</p>", unsafe_allow_html=True)
-                metric_card("Revenue (TTM)", fmt_large(revenue))
-                metric_card("Gross Profit",  fmt_large(gross_profit))
-                metric_card("EBITDA",        fmt_large(ebitda_v))
-                metric_card("Net Income",    fmt_large(net_income))
-            with c2:
-                st.markdown("<p style='color:#94a3b8;font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase;'>Margins & Returns</p>", unsafe_allow_html=True)
-                metric_card("Gross Margin",     fmt(gross_margin*100 if gross_margin else None,suffix="%") if gross_margin else "N/A")
-                metric_card("Operating Margin", fmt(op_margin*100    if op_margin    else None,suffix="%") if op_margin    else "N/A")
-                metric_card("Net Margin",       fmt(profit_margin*100 if profit_margin else None,suffix="%") if profit_margin else "N/A")
-                metric_card("ROE", fmt(roe*100 if roe else None,suffix="%") if roe else "N/A")
-                metric_card("ROA", fmt(roa*100 if roa else None,suffix="%") if roa else "N/A")
-            with c3:
-                st.markdown("<p style='color:#94a3b8;font-size:11px;font-weight:600;margin-bottom:4px;text-transform:uppercase;'>Balance Sheet</p>", unsafe_allow_html=True)
-                metric_card("Cash",           fmt_large(total_cash))
-                metric_card("Total Debt",     fmt_large(total_debt))
-                metric_card("Debt / Equity",  fmt(d2e))
-                metric_card("Current Ratio",  fmt(curr_ratio))
-                metric_card("Free Cash Flow", fmt_large(fcf_v))
-
-            st.markdown('<div class="section-header">Valuation & Dividends</div>', unsafe_allow_html=True)
-            c1,c2 = st.columns(2)
-            with c1:
-                metric_card("EV / EBITDA",    fmt(ev_ebitda))
-                metric_card("P/S Ratio",      fmt(ps))
-                metric_card("Revenue Growth", fmt(rev_growth*100  if rev_growth  else None,suffix="%") if rev_growth  else "N/A")
-                metric_card("EPS Growth",     fmt(earn_growth*100 if earn_growth else None,suffix="%") if earn_growth else "N/A")
-            with c2:
-                metric_card("Dividend Yield", fmt(div_yield*100 if div_yield else None,suffix="%") if div_yield else "N/A")
-                metric_card("Dividend Rate",  fmt(div_rate,prefix="$") if div_rate else "N/A")
-                metric_card("Payout Ratio",   fmt(payout*100 if payout else None,suffix="%") if payout else "N/A")
-
-            if not is_crypto:
-                st.markdown('<div class="section-header">Earnings History</div>', unsafe_allow_html=True)
-                try:
-                    earnings_df, calendar = fetch_earnings(ticker)
-                    if calendar is not None:
-                        nd = None
-                        if isinstance(calendar, dict):
-                            nd = calendar.get("Earnings Date")
-                            if isinstance(nd,list): nd = nd[0] if nd else None
-                        elif isinstance(calendar, pd.DataFrame) and "Earnings Date" in calendar.columns:
-                            nd = calendar["Earnings Date"].iloc[0]
-                        if nd:
-                            nd = pd.to_datetime(nd)
-                            days_away = (nd - pd.Timestamp.now()).days
-                            tag = f"in {days_away} days" if days_away > 0 else "recently"
-                            st.markdown(f"<p style='color:#5a9fd4;font-size:13px;'>Next earnings: <b>{nd.strftime('%b %d, %Y')}</b> ({tag})</p>", unsafe_allow_html=True)
-                    if earnings_df is not None and not earnings_df.empty:
-                        df_e = earnings_df.sort_index(ascending=False).head(8)
-                        dates,actuals,estimates,surprises = [],[],[],[]
-                        for idx, row in df_e.iterrows():
-                            dt = pd.to_datetime(idx).strftime("%b '%y") if not isinstance(idx,str) else idx
-                            actual   = row.get("epsActual")      if "epsActual"      in df_e.columns else None
-                            estimate = row.get("epsEstimate")    if "epsEstimate"    in df_e.columns else None
-                            surprise = row.get("surprisePercent") if "surprisePercent" in df_e.columns else None
-                            dates.append(dt); actuals.append(actual); estimates.append(estimate); surprises.append(surprise)
-                        fig2 = go.Figure()
-                        fig2.add_trace(go.Bar(x=dates[::-1],y=estimates[::-1],name="Estimate",marker_color="#1e3a5f",hovertemplate="<b>%{x}</b><br>Est: $%{y:.2f}<extra></extra>"))
-                        fig2.add_trace(go.Bar(x=dates[::-1],y=actuals[::-1],name="Actual",
-                            marker_color=["#22c55e" if (a and e and a>=e) else "#ef4444" for a,e in zip(actuals[::-1],estimates[::-1])],
-                            hovertemplate="<b>%{x}</b><br>Act: $%{y:.2f}<extra></extra>"))
-                        fig2.update_layout(paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",barmode="overlay",
-                            margin=dict(l=10,r=10,t=10,b=10),height=220,
-                            xaxis=dict(showgrid=False, color="#1e293b", showline=True, linecolor="#94a3b8", tickfont=dict(size=11, color="#1e293b", family="Inter,sans-serif")),
-                            yaxis=dict(showgrid=True, gridcolor="#d1d9e0", color="#1e293b", showline=True, linecolor="#94a3b8", title="EPS ($)", tickfont=dict(size=11, color="#1e293b", family="Inter,sans-serif")),
-                            legend=dict(bgcolor="#ffffff",font=dict(color="#475569")),hovermode="x unified")
-                        st.plotly_chart(fig2, width="stretch")
-                        rows_html = ""
-                        for dt,actual,estimate,surprise in zip(dates,actuals,estimates,surprises):
-                            bm = ""
-                            if actual is not None and estimate is not None:
-                                if actual>estimate: bm='<span class="beat">BEAT</span>'
-                                elif actual<estimate: bm='<span class="miss">MISS</span>'
-                                else: bm='<span class="inline">IN-LINE</span>'
-                            surp = f"{surprise:+.1f}%" if surprise is not None and not pd.isna(surprise) else "—"
-                            rows_html += f'<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 12px;color:#64748b;">{dt}</td><td style="padding:8px 12px;color:#1e3a5c;text-align:right;">{fmt(actual,prefix="$") if actual is not None else "—"}</td><td style="padding:8px 12px;color:#94a3b8;text-align:right;">{fmt(estimate,prefix="$") if estimate is not None else "—"}</td><td style="padding:8px 12px;text-align:right;">{surp}</td><td style="padding:8px 12px;text-align:center;">{bm}</td></tr>'
-                        st.markdown(f'<table style="width:100%;border-collapse:collapse;background:#ffffff;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;"><thead><tr style="background:#f1f5f9;"><th style="padding:9px 12px;color:#64748b;text-align:left;font-size:11px;text-transform:uppercase;">Quarter</th><th style="padding:9px 12px;color:#64748b;text-align:right;font-size:11px;text-transform:uppercase;">EPS Actual</th><th style="padding:9px 12px;color:#64748b;text-align:right;font-size:11px;text-transform:uppercase;">EPS Estimate</th><th style="padding:9px 12px;color:#64748b;text-align:right;font-size:11px;text-transform:uppercase;">Surprise</th><th style="padding:9px 12px;color:#64748b;text-align:center;font-size:11px;text-transform:uppercase;">Result</th></tr></thead><tbody>{rows_html}</tbody></table>', unsafe_allow_html=True)
-                    else:
-                        st.markdown("<p style='color:#64748b;'>No earnings history available.</p>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.markdown(f"<p style='color:#64748b;'>Earnings unavailable: {e}</p>", unsafe_allow_html=True)
-
-                st.markdown('<div class="section-header">Analyst Ratings &amp; Price Targets</div>', unsafe_allow_html=True)
-                try:
-                    price_targets, rec_summary = fetch_analyst(ticker)
-                    has_targets = price_targets and isinstance(price_targets, dict) and price_targets.get("mean")
-                    has_recs    = rec_summary is not None and not (hasattr(rec_summary, "empty") and rec_summary.empty)
-                    if has_targets:
-                        current_p = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-                        mean_t    = price_targets.get("mean", 0)
-                        low_t     = price_targets.get("low", 0)
-                        high_t    = price_targets.get("high", 0)
-                        upside    = ((mean_t - current_p) / current_p * 100) if current_p else 0
-                        up_color  = "#22c55e" if upside >= 0 else "#ef4444"
-                        up_sign   = "+" if upside >= 0 else ""
-                        ta1, ta2, ta3, ta4 = st.columns(4)
-                        with ta1: st.markdown(f'<div class="metric-card"><div class="metric-label">Mean Target</div><div class="metric-value">${mean_t:,.2f}</div></div>', unsafe_allow_html=True)
-                        with ta2: st.markdown(f'<div class="metric-card"><div class="metric-label">Low Target</div><div class="metric-value">${low_t:,.2f}</div></div>', unsafe_allow_html=True)
-                        with ta3: st.markdown(f'<div class="metric-card"><div class="metric-label">High Target</div><div class="metric-value">${high_t:,.2f}</div></div>', unsafe_allow_html=True)
-                        with ta4: st.markdown(f'<div class="metric-card"><div class="metric-label">Upside (mean)</div><div class="metric-value" style="color:{up_color};">{up_sign}{upside:.1f}%</div></div>', unsafe_allow_html=True)
-                    if has_recs:
-                        try:
-                            row0 = rec_summary.iloc[0] if hasattr(rec_summary, "iloc") else None
-                            if row0 is not None:
-                                strong_buy  = int(row0.get("strongBuy", 0))
-                                buy         = int(row0.get("buy", 0))
-                                hold        = int(row0.get("hold", 0))
-                                sell        = int(row0.get("sell", 0))
-                                strong_sell = int(row0.get("strongSell", 0))
-                                total       = strong_buy + buy + hold + sell + strong_sell or 1
-                                bars = [
-                                    ("Strong Buy",  strong_buy,  "#16a34a"),
-                                    ("Buy",         buy,         "#22c55e"),
-                                    ("Hold",        hold,        "#7a9abf"),
-                                    ("Sell",        sell,        "#ef4444"),
-                                    ("Strong Sell", strong_sell, "#991b1b"),
-                                ]
-                                bar_html = "<div style='display:flex;gap:3px;height:28px;border-radius:6px;overflow:hidden;margin-bottom:6px;'>"
-                                for lbl, count, color in bars:
-                                    if count > 0:
-                                        pct_b = count / total * 100
-                                        bar_html += f'<div style="flex:{pct_b};background:{color};display:flex;align-items:center;justify-content:center;"><span style="color:white;font-size:10px;font-weight:700;">{count}</span></div>'
-                                bar_html += "</div>"
-                                label_html = "<div style='display:flex;gap:12px;flex-wrap:wrap;'>"
-                                for lbl, count, color in bars:
-                                    if count > 0:
-                                        label_html += f'<span style="color:{color};font-size:11px;font-weight:600;">&#9679; {lbl}: {count}</span>'
-                                label_html += "</div>"
-                                st.markdown("<div style='margin-top:10px;'>" + bar_html + label_html + "</div>", unsafe_allow_html=True)
-                        except Exception:
-                            pass
-                    if not has_targets and not has_recs:
-                        st.markdown("<p style='color:#64748b;font-size:12px;'>No analyst data available.</p>", unsafe_allow_html=True)
-                except Exception:
-                    st.markdown("<p style='color:#64748b;'>Analyst data unavailable.</p>", unsafe_allow_html=True)
-
-                st.markdown('<div class="section-header">Insider Transactions</div>', unsafe_allow_html=True)
-                try:
-                    insider_df = fetch_insider(ticker)
-                    if insider_df is not None and not insider_df.empty:
-                        rows_html = ""
-                        for _, row in insider_df.head(12).iterrows():
-                            date  = str(row.get("Start Date", ""))[:10]
-                            iname = str(row.get("Insider", ""))[:28]
-                            pos   = str(row.get("Position", ""))[:20]
-                            text  = str(row.get("Text", ""))
-                            shares= row.get("Shares", 0)
-                            value = row.get("Value", 0)
-                            tl = text.lower()
-                            if any(w in tl for w in ("purchase","bought","acquired","buy")):
-                                txn_label, txn_color = "Buy", "#22c55e"
-                            elif any(w in tl for w in ("sale","sold","dispose","gift")):
-                                txn_label, txn_color = ("Sell", "#ef4444") if ("sale" in tl or "sold" in tl) else ("Gift", "#94a3b8")
-                            else:
-                                txn_label, txn_color = "Other", "#64748b"
-                            shares_fmt = f"{int(shares):,}" if shares and shares == shares else "—"
-                            value_fmt  = fmt_large(value) if value and value == value and value > 0 else "—"
-                            rows_html += (
-                                f'<tr><td style="padding:7px 10px;color:#94a3b8;font-size:11px;border-bottom:1px solid #e2e8f0;white-space:nowrap;">{date}</td>'
-                                f'<td style="padding:7px 10px;color:#1e3a5c;font-size:12px;border-bottom:1px solid #e2e8f0;">{iname}</td>'
-                                f'<td style="padding:7px 10px;color:#64748b;font-size:11px;border-bottom:1px solid #e2e8f0;">{pos}</td>'
-                                f'<td style="padding:7px 10px;border-bottom:1px solid #e2e8f0;"><span style="color:{txn_color};font-size:11px;font-weight:700;background:{txn_color}22;padding:2px 8px;border-radius:4px;">{txn_label}</span></td>'
-                                f'<td style="padding:7px 10px;color:#1e3a5c;font-size:12px;border-bottom:1px solid #e2e8f0;text-align:right;">{shares_fmt}</td>'
-                                f'<td style="padding:7px 10px;color:#1e3a5c;font-size:12px;border-bottom:1px solid #e2e8f0;text-align:right;">{value_fmt}</td></tr>'
-                            )
-                        hdrs = "".join(f'<th style="padding:8px 10px;color:#64748b;text-align:left;font-size:11px;text-transform:uppercase;background:#f1f5f9;border-bottom:1px solid #e2e8f0;">{c}</th>' for c in ["Date","Insider","Position","Type","Shares","Value"])
-                        st.markdown(f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e2e8f0;"><table style="width:100%;border-collapse:collapse;"><thead><tr>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown("<p style='color:#64748b;font-size:12px;'>No recent insider transactions.</p>", unsafe_allow_html=True)
-                except Exception:
-                    st.markdown("<p style='color:#64748b;font-size:12px;'>Insider data unavailable.</p>", unsafe_allow_html=True)
-
-            st.markdown('<div class="section-header">Company News</div>', unsafe_allow_html=True)
-            try:
-                news = fetch_news(ticker)
-                if news:
-                    for article in news[:8]:
-                        content = article.get("content",{})
-                        title   = content.get("title") or article.get("title","")
-                        url = ""
-                        cp = content.get("canonicalUrl",{})
-                        if isinstance(cp,dict): url = cp.get("url","")
-                        if not url:
-                            ct = content.get("clickThroughUrl",{})
-                            url = ct.get("url","") if isinstance(ct,dict) else ""
-                        if not url: url = article.get("link","")
-                        pub = content.get("pubDate") or article.get("providerPublishTime")
-                        try:
-                            dt_str = datetime.fromtimestamp(pub).strftime("%b %d  %H:%M") if isinstance(pub,(int,float)) else pd.to_datetime(pub).strftime("%b %d  %H:%M")
-                        except Exception:
-                            dt_str = ""
-                        provider = content.get("provider",{})
-                        source = provider.get("displayName","") if isinstance(provider,dict) else article.get("publisher","")
-                        t_html = f'<a href="{url}" target="_blank">{title}</a>' if url else title
-                        st.markdown(f'<div class="news-card"><div class="news-title">{t_html}</div><div class="news-meta">{source}{"&nbsp;·&nbsp;" if source and dt_str else ""}{dt_str}</div></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown("<p style='color:#64748b;'>No recent news.</p>", unsafe_allow_html=True)
-            except Exception as e:
-                st.markdown(f"<p style='color:#64748b;'>News unavailable: {e}</p>", unsafe_allow_html=True)
-
-            summary_text = info.get("longBusinessSummary")
-            if summary_text:
-                st.markdown('<div class="section-header">About</div>', unsafe_allow_html=True)
-                with st.expander(f"About {name}", expanded=False):
-                    st.markdown(f"<p style='color:#475569;line-height:1.75;font-size:13px;'>{summary_text}</p>", unsafe_allow_html=True)
-
-        except Exception as e:
-            if _is_rate_limit(e):
-                st.warning("⚠️ Yahoo Finance is rate limiting requests right now. Please wait 30–60 seconds and try again.")
-            else:
-                st.error(f"Error loading {ticker}: {e}")
+        else:
+            st.markdown("<p style='color:#64748b;'>No recent news.</p>", unsafe_allow_html=True)
 
 if st.session_state.get("open_ticker"):
     ticker_to_show = st.session_state["open_ticker"]
