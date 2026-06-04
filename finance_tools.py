@@ -233,6 +233,17 @@ SEARCH_KEYWORD_MAP = {
     "leverage ratio":                "Debt/Equity",
     "sg&a":                          "SG&A Expense",
     "selling general and administrative": "SG&A Expense",
+    "10 year roe":                   "10-Year Avg ROE %",
+    "10yr roe":                      "10-Year Avg ROE %",
+    "10-year roe":                   "10-Year Avg ROE %",
+    "10 year return on equity":      "10-Year Avg ROE %",
+    "10yr return on equity":         "10-Year Avg ROE %",
+    "10-year return on equity":      "10-Year Avg ROE %",
+    "average roe":                   "10-Year Avg ROE %",
+    "avg roe":                       "10-Year Avg ROE %",
+    "long term roe":                 "10-Year Avg ROE %",
+    "long-term roe":                 "10-Year Avg ROE %",
+    "decade roe":                    "10-Year Avg ROE %",
 }
 
 NAME_OVERRIDES = {
@@ -467,7 +478,34 @@ def _add_derived_metrics(df):
         df.loc["Debt/Equity"] = total_debt / eq
     return df
 
-RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity"}
+RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %"}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_10yr_roe(ticker):
+    """Returns (avg_roe, {year: roe_pct}) using SEC EDGAR 10-K data (up to 10 years)."""
+    cik = get_cik(ticker)
+    if not cik:
+        return None, {}
+    try:
+        facts = get_edgar_facts(cik)
+        df = extract_edgar_annual(facts, {**EDGAR_INCOME, **EDGAR_BALANCE})
+        if df.empty or "Net Income" not in df.index or "Total Equity" not in df.index:
+            return None, {}
+        ni  = df.loc["Net Income"]
+        eq  = df.loc["Total Equity"].replace(0, float("nan"))
+        roe = (ni / eq * 100).dropna()
+        years = sorted(roe.index, reverse=True)[:10]
+        year_data = {y: round(float(roe[y]), 2) for y in sorted(years)}
+        avg = round(float(roe[list(years)].mean()), 2)
+        return avg, year_data
+    except Exception:
+        return None, {}
+
+def _is_10yr_roe_query(question):
+    q = question.lower()
+    has_10  = "10" in q or "ten year" in q or "decade" in q
+    has_roe = "roe" in q or "return on equity" in q
+    return has_10 and has_roe
 
 def extract_edgar_annual(facts, concept_map):
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -845,46 +883,81 @@ if ai_question and search_btn:
                         s_name = meta.get("name") or search_ticker
                     except Exception:
                         s_name = search_ticker
-                result = None
-                try:
-                    result = search_edgar(ai_question, search_ticker)
-                except Exception:
-                    pass
-                if not result:
+                # ── 10-Year ROE — special path ─────────────────────────────
+                if _is_10yr_roe_query(ai_question):
+                    avg_roe, year_data = compute_10yr_roe(search_ticker)
+                    if avg_roe is not None and year_data:
+                        sign = "+" if avg_roe >= 0 else ""
+                        color = "#16a34a" if avg_roe >= 0 else "#dc2626"
+                        yrs   = sorted(year_data.keys())
+                        n_yrs = len(yrs)
+                        rows_html = "".join(
+                            f"<tr><td style='padding:5px 12px;color:#64748b;'>{y}</td>"
+                            f"<td style='padding:5px 12px;text-align:right;"
+                            f"color:{'#16a34a' if year_data[y]>=0 else '#dc2626'};font-weight:600;'>"
+                            f"{'+' if year_data[y]>=0 else ''}{year_data[y]:.2f}%</td></tr>"
+                            for y in sorted(yrs, reverse=True)
+                        )
+                        st.markdown(f"""
+                        <div class="answer-box">
+                            <div class="answer-label">{s_name} ({search_ticker}) · SEC EDGAR 10-K</div>
+                            <div class="answer-item">10-Year Average ROE ({yrs[0]}–{yrs[-1]})</div>
+                            <div class="answer-value" style="color:{color};">{sign}{avg_roe:.2f}%</div>
+                            <div class="answer-meta">{n_yrs} fiscal years averaged</div>
+                        </div>""", unsafe_allow_html=True)
+                        with st.expander("Year-by-year breakdown"):
+                            st.markdown(
+                                f'<table style="width:100%;font-family:Inter,sans-serif;font-size:12px;">'
+                                f'<thead><tr>'
+                                f'<th style="text-align:left;padding:5px 12px;color:#94a3b8;font-size:10px;text-transform:uppercase;">Year</th>'
+                                f'<th style="text-align:right;padding:5px 12px;color:#94a3b8;font-size:10px;text-transform:uppercase;">ROE %</th>'
+                                f'</tr></thead><tbody>{rows_html}</tbody></table>',
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        st.info(f"10-year ROE data not available for {s_name} ({search_ticker}) — SEC EDGAR may not have sufficient history.")
+                else:
+                # ── Normal search path ─────────────────────────────────────────
+                    result = None
                     try:
-                        result = search_yfinance(ai_question, yf.Ticker(search_ticker, session=None))
+                        result = search_edgar(ai_question, search_ticker)
                     except Exception:
                         pass
-                if result:
-                    val, item, period, source = result
-                    try:
-                        period_label = f"Fiscal Year {period}" if isinstance(period, int) else pd.to_datetime(str(period)).strftime("%b %d, %Y")
-                    except Exception:
-                        period_label = str(period)
-                    if item in RATIO_LABELS:
-                        fv = f"{val:.2f}%" if "%" in item else f"{val:.2f}x"
-                    elif isinstance(val, (int, float)) and abs(val) > 10000:
-                        fv = fmt_large(val)
+                    if not result:
+                        try:
+                            result = search_yfinance(ai_question, yf.Ticker(search_ticker, session=None))
+                        except Exception:
+                            pass
+                    if result:
+                        val, item, period, source = result
+                        try:
+                            period_label = f"Fiscal Year {period}" if isinstance(period, int) else pd.to_datetime(str(period)).strftime("%b %d, %Y")
+                        except Exception:
+                            period_label = str(period)
+                        if item in RATIO_LABELS:
+                            fv = f"{val:.2f}%" if "%" in item else f"{val:.2f}x"
+                        elif isinstance(val, (int, float)) and abs(val) > 10000:
+                            fv = fmt_large(val)
+                        else:
+                            fv = fmt(val)
+                        st.markdown(f"""
+                        <div class="answer-box">
+                            <div class="answer-label">{s_name} ({search_ticker}) · {source}</div>
+                            <div class="answer-item">{item}</div>
+                            <div class="answer-value">{fv}</div>
+                            <div class="answer-meta">{period_label}</div>
+                        </div>""", unsafe_allow_html=True)
                     else:
-                        fv = fmt(val)
-                    st.markdown(f"""
-                    <div class="answer-box">
-                        <div class="answer-label">{s_name} ({search_ticker}) · {source}</div>
-                        <div class="answer-item">{item}</div>
-                        <div class="answer-value">{fv}</div>
-                        <div class="answer-meta">{period_label}</div>
-                    </div>""", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div style="background:#fff7ed;border:1px solid #fed7aa;border-left:3px solid #f97316;border-radius:6px;padding:16px 20px;margin:10px 0;">
-                        <div style="color:#c2410c;font-size:13px;font-weight:600;">Metric not found for {s_name} ({search_ticker})</div>
-                        <div style="color:#64748b;font-size:12px;margin-top:6px;">
-                            This metric may not be reported by this company, or try rephrasing.<br>
-                            <span style="color:#64748b;">Examples: &nbsp;
-                            <b style="color:#94a3b8;">revenue · net income · EBITDA · free cash flow · total debt · net debt · ROE · gross margin · pretax income · capex</b>
-                            </span>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
+                        st.markdown(f"""
+                        <div style="background:#fff7ed;border:1px solid #fed7aa;border-left:3px solid #f97316;border-radius:6px;padding:16px 20px;margin:10px 0;">
+                            <div style="color:#c2410c;font-size:13px;font-weight:600;">Metric not found for {s_name} ({search_ticker})</div>
+                            <div style="color:#64748b;font-size:12px;margin-top:6px;">
+                                This metric may not be reported by this company, or try rephrasing.<br>
+                                <span style="color:#64748b;">Examples: &nbsp;
+                                <b style="color:#94a3b8;">revenue · net income · EBITDA · free cash flow · total debt · net debt · ROE · gross margin · pretax income · capex</b>
+                                </span>
+                            </div>
+                        </div>""", unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -1067,6 +1140,39 @@ def show_profile(ticker):
         with c2:
             metric_card("Volume",     f"{volume:,}" if volume else "N/A")
             metric_card("Prev Close", fmt(prev_close, prefix="$"))
+
+        # 10-Year ROE
+        avg_roe, roe_by_year = compute_10yr_roe(ticker)
+        if avg_roe is not None and roe_by_year:
+            st.markdown('<div class="section-header">10-Year Return on Equity</div>', unsafe_allow_html=True)
+            roe_color = "#16a34a" if avg_roe >= 0 else "#dc2626"
+            roe_sign  = "+" if avg_roe >= 0 else ""
+            yrs = sorted(roe_by_year.keys())
+            st.markdown(
+                f'<div class="metric-card" style="margin-bottom:12px;">'
+                f'<div class="metric-label">10-Year Average ROE ({yrs[0]}–{yrs[-1]})</div>'
+                f'<div class="metric-value" style="color:{roe_color};font-size:24px;">{roe_sign}{avg_roe:.2f}%</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            # Mini bar chart
+            bar_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in roe_by_year.values()]
+            fig_roe = go.Figure(go.Bar(
+                x=list(roe_by_year.keys()),
+                y=list(roe_by_year.values()),
+                marker_color=bar_colors,
+                hovertemplate="<b>%{x}</b><br>ROE: %{y:.2f}%<extra></extra>",
+            ))
+            fig_roe.update_layout(
+                paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+                margin=dict(l=10, r=10, t=10, b=10), height=180,
+                showlegend=False,
+                yaxis=dict(ticksuffix="%", showgrid=True, gridcolor="#e2e8f0",
+                           zeroline=True, zerolinecolor="#cbd5e1",
+                           tickfont=dict(size=10, color="#64748b")),
+                xaxis=dict(tickfont=dict(size=10, color="#64748b"), showgrid=False),
+            )
+            st.plotly_chart(fig_roe, width="stretch")
 
         # Financial statements — SEC EDGAR (always works on cloud)
         st.markdown('<div class="section-header">Financial Statements (SEC EDGAR · back to ~2001)</div>', unsafe_allow_html=True)
