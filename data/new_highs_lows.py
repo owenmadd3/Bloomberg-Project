@@ -125,17 +125,20 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
     lo_df = build_table(lo_mask, roll_low,  "Low")
     return hi_df, lo_df
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_company_names(tickers: tuple) -> dict:
-    """Fetch longName for each ticker via yfinance."""
-    names = {}
-    for t in tickers:
-        try:
-            info = yf.Ticker(t).info
-            names[t] = info.get("longName") or info.get("shortName") or t
-        except Exception:
-            names[t] = t
-    return names
+    """Resolve full company names from SEC EDGAR — no Yahoo auth required."""
+    try:
+        r = requests.get(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers={"User-Agent": "Bloomberg-Project research@bloomberg-project.com"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        lookup = {v["ticker"].upper(): v["title"].title() for v in r.json().values()}
+    except Exception:
+        lookup = {}
+    return {t: lookup.get(t.upper(), t) for t in tickers}
 
 @st.cache_data(ttl=15, show_spinner=False)   # 15s to match refresh interval
 def load_index(ticker: str, start_str: str) -> pd.DataFrame:
@@ -537,12 +540,10 @@ c_date = st.date_input(
 with st.spinner("Loading constituents..."):
     hi_df, lo_df = get_constituents(prices, str(c_date))
 
-# Optionally enrich with company names (cached separately so it doesn't slow the main loop)
-show_names = st.checkbox("Show company names (slower first load)", value=False)
-if show_names and (not hi_df.empty or not lo_df.empty):
+# Enrich constituents with full company names from SEC EDGAR
+if not hi_df.empty or not lo_df.empty:
     all_tickers = tuple(set(hi_df["Ticker"].tolist() + lo_df["Ticker"].tolist()))
-    with st.spinner("Fetching company names..."):
-        names = get_company_names(all_tickers)
+    names = get_company_names(all_tickers)
     if not hi_df.empty:
         hi_df.insert(1, "Company", hi_df["Ticker"].map(names))
     if not lo_df.empty:
