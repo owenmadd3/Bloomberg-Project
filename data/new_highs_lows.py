@@ -126,8 +126,8 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
     return hi_df, lo_df
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_company_names(tickers: tuple) -> dict:
-    """Resolve full company names from SEC EDGAR — no Yahoo auth required."""
+def load_edgar_name_lookup() -> dict:
+    """Fetch full ticker→company name mapping from SEC EDGAR (single bulk request)."""
     try:
         r = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
@@ -135,10 +135,9 @@ def get_company_names(tickers: tuple) -> dict:
             timeout=10,
         )
         r.raise_for_status()
-        lookup = {v["ticker"].upper(): v["title"].title() for v in r.json().values()}
+        return {v["ticker"].upper(): v["title"].title() for v in r.json().values()}
     except Exception:
-        lookup = {}
-    return {t: lookup.get(t.upper(), t) for t in tickers}
+        return {}
 
 @st.cache_data(ttl=15, show_spinner=False)   # 15s to match refresh interval
 def load_index(ticker: str, start_str: str) -> pd.DataFrame:
@@ -541,13 +540,11 @@ with st.spinner("Loading constituents..."):
     hi_df, lo_df = get_constituents(prices, str(c_date))
 
 # Enrich constituents with full company names from SEC EDGAR
-if not hi_df.empty or not lo_df.empty:
-    all_tickers = tuple(set(hi_df["Ticker"].tolist() + lo_df["Ticker"].tolist()))
-    names = get_company_names(all_tickers)
-    if not hi_df.empty:
-        hi_df.insert(1, "Company", hi_df["Ticker"].map(names))
-    if not lo_df.empty:
-        lo_df.insert(1, "Company", lo_df["Ticker"].map(names))
+edgar_names = load_edgar_name_lookup()
+if not hi_df.empty:
+    hi_df.insert(1, "Company", hi_df["Ticker"].map(lambda t: edgar_names.get(t.upper(), t)))
+if not lo_df.empty:
+    lo_df.insert(1, "Company", lo_df["Ticker"].map(lambda t: edgar_names.get(t.upper(), t)))
 
 tab_hi, tab_lo = st.tabs([
     f"🟢  New 52-Week Highs  ({len(hi_df)})",
