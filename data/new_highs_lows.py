@@ -167,12 +167,38 @@ def safe_float(val):
 @st.cache_data(ttl=86400, show_spinner=False)   # refresh once a day
 def fetch_exchange_tickers(exchange: str) -> list:
     """
-    Pull S&P 500 + 400 + 600 from Wikipedia (~1,500 tickers).
-    Fast enough for Streamlit Cloud; falls back to curated list on failure.
+    Pull full exchange listing from NASDAQ Trader (~2,400 NYSE tickers).
+    Falls back to S&P lists from Wikipedia, then to curated list.
     """
     import requests
     from io import StringIO
 
+    # ── Primary: NASDAQ Trader official daily file ────────────────────────────
+    try:
+        if exchange == "NASDAQ":
+            url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            df = pd.read_csv(StringIO(r.text), sep="|")
+            mask = (df["Test Issue"] == "N") & (df["Symbol"].str.match(r"^[A-Z]{1,5}$"))
+            return df[mask]["Symbol"].tolist()
+        else:
+            exchange_code = {"NYSE": "N", "AMEX": "A"}
+            url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            df = pd.read_csv(StringIO(r.text), sep="|")
+            code = exchange_code.get(exchange, "N")
+            mask = (
+                (df["Exchange"] == code) &
+                (df["Test Issue"] == "N") &
+                (df["ACT Symbol"].str.match(r"^[A-Z]{1,5}$"))
+            )
+            tickers = df[mask]["ACT Symbol"].tolist()
+            if len(tickers) > 500:   # sanity check — should be ~2,400
+                return tickers
+    except Exception:
+        pass
+
+    # ── Fallback: Wikipedia S&P 500 + 400 + 600 (~1,500 tickers) ─────────────
     urls = [
         "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
         "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
@@ -292,7 +318,7 @@ with st.sidebar:
         )
 
 # ── Load data — fetch 2 years (252 days rolling window + 1 year display) ─────
-fetch_start = (datetime.today() - timedelta(days=365*5 + 270)).strftime("%Y-%m-%d")
+fetch_start = (datetime.today() - timedelta(days=365*2 + 270)).strftime("%Y-%m-%d")
 
 with st.spinner(f"Fetching {exchange} ticker list..."):
     full_list = fetch_exchange_tickers(exchange)
