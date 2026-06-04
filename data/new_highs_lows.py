@@ -4,17 +4,19 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
-from streamlit_autorefresh import st_autorefresh
+from datetime import timezone
 
 st.set_page_config(page_title="52-Week New Highs / New Lows", page_icon=None, layout="wide")
 
 # Auto-refresh — only runs during market hours (9:30–16:00 ET Mon–Fri)
-from datetime import timezone
-_now = datetime.now(timezone.utc)
-_market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)   # 9:30–16:00 ET = 13:30–20:00 UTC
-_refresh_interval = 15_000   # 15 seconds
-if _market_open:
-    st_autorefresh(interval=_refresh_interval, key="live_refresh")
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _now = datetime.now(timezone.utc)
+    _market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)
+    if _market_open:
+        st_autorefresh(interval=15_000, key="live_refresh")
+except Exception:
+    _market_open = False
 
 st.markdown("""
 <style>
