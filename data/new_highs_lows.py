@@ -9,7 +9,8 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="52-Week New Highs / New Lows", page_icon=None, layout="wide")
 
 # Auto-refresh — only runs during market hours (9:30–16:00 ET Mon–Fri)
-_now = datetime.utcnow()
+from datetime import timezone
+_now = datetime.now(timezone.utc)
 _market_open = _now.weekday() < 5 and (13 <= _now.hour < 20)   # 9:30–16:00 ET = 13:30–20:00 UTC
 _refresh_interval = 15_000   # 15 seconds
 if _market_open:
@@ -500,7 +501,7 @@ fig.update_xaxes(showgrid=True, gridcolor="#161616", tickfont=dict(color="#666",
 fig.update_xaxes(showgrid=True, gridcolor="#161616", tickfont=dict(color="#666", size=10, family="monospace"),
                  rangeslider_visible=False, **spike, row=2, col=1)
 
-st.plotly_chart(fig, use_container_width=True, config={
+st.plotly_chart(fig, width="stretch", config={
     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
 })
 
@@ -570,4 +571,4 @@ with st.expander("Raw Breadth Data"):
     display = breadth[["new_highs","new_lows"]].copy()
     display.columns = [f"{BBG_HI[exchange]} (New Highs)", f"{BBG_LO[exchange]} (New Lows)"]
     display.index = display.index.strftime("%m/%d/%Y")
-    st.dataframe(display.iloc[::-1].head(120), use_container_width=True, height=320)
+    st.dataframe(display.iloc[::-1].head(120), width="stretch", height=320)
