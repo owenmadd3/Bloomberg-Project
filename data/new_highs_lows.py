@@ -189,9 +189,65 @@ def fetch_exchange_tickers(exchange: str) -> list:
         except Exception:
             pass
 
+    # Supplement with hardcoded NYSE tickers not in S&P indices
+    EXTRA_NYSE = [
+        # Regional banks
+        "CFG","FITB","RF","HBAN","KEY","CMA","SNV","BOKF","UMBF","WTFC","IBCP","WASH",
+        "NBTB","FULT","WSBC","EGBN","SBCF","TRMK","BANF","FFIN","CVBF","CADE","SFNC",
+        "HOPE","BHLB","INDB","PKBK","NFBK","TOWN","AMNB","CTBI","ESSA","AROW","THFF",
+        # REITs
+        "NNN","STAG","COLD","IIPR","UNIT","GMRE","PLYM","GOOD","HASI","PINE","FCPT",
+        "NLCP","NTST","PSTL","LAND","GIPR","MDRR","CONDUIT","NXRT","ILPT","BRSP","GNL",
+        "ACRE","BXMT","RC","TRTX","KREF","GPMT","LADR","FBRT","SACH","ACR","MVRL",
+        "FRT","KIM","REG","BRX","ROIC","RPAI","WRI","SITC","AKR","UE","CBL","MAC",
+        "SKT","TCO","WPG","PEI","KRG","RPAI","UBA","RVI","WHLR","CLPR","FOR","NXRT",
+        # MLPs & Energy
+        "MMP","PAA","PAGP","EPD","ET","WES","TRGP","OKE","KMI","LNG","CTRA","APA",
+        "MUR","SM","CPE","MTDR","ESTE","MGY","CIVI","VTLE","NOG","ESTE","REI","TALO",
+        "WTI","SWN","RRC","CNX","GPOR","ARCH","CEIX","AMR","ARLP","FANG","PR","BATL",
+        # Insurance
+        "PRG","AIZ","UNM","PFG","FG","CNO","GL","ALAB","NAVG","PLMR","KINGSWAY",
+        "HIG","MFC","SFG","FNF","FAF","STC","ITIC","STFC","ERIE","CINF","RLI","EMC",
+        # Utilities
+        "WEC","ES","ETR","AEE","CNP","LNT","OGE","NWE","OTTR","IDA","AVA","PNM",
+        "UTL","SPKE","GAS","NJR","SR","SJI","SWX","RGCO","NGAS","GBNK","ARTNA",
+        # Healthcare / Biotech
+        "THC","UHS","CYH","LPNT","ENSG","ADUS","AFYA","AMEDISYS","CCRN","NKTR",
+        "PRTK","RCUS","SRRX","TVTX","VRCA","ACCD","AGL","AMEH","AMED","ARDX",
+        "BNTX","BNGO","CBPO","CDNA","CHRS","CLDX","CLVS","CMPS","CNMD","CPRX",
+        # Industrials
+        "AIN","ALG","ALGT","AMWD","AX","B","BSET","CLH","CSWI","DNOW","DY","EXP",
+        "FBHS","FELE","FLOW","FN","GFF","HLIO","HNI","HRI","HUBB","IIIN","IPAR",
+        "JBTM","KAI","KFRC","LNN","MFIN","MGRC","MYRG","NACCO","NCS","NETI","NHC",
+        "NPO","NVR","ORN","PRIM","RXN","SSD","SXC","SXT","TILE","TREX","TRS","VSM",
+        # Consumer
+        "BURL","CATO","CONN","DDS","DXLG","ERI","EVRI","EYE","FL","GCO","GNC",
+        "HBI","HIBB","JWN","KSS","LB","LESL","LGF-A","LGND","LKFN","LOCO","LOVE",
+        "LUCK","MDVX","MIK","MLHR","MNRO","MOD","MOV","MRCY","MWA","NATH","NDLS",
+        "PLAY","POOL","PRGO","PVH","RAVE","RCII","ROST","RUTH","RXRX","SASS","SBH",
+        # Financial services
+        "COOP","CACC","ECPG","JEF","LAZ","MC","MFAC","NMM","OPY","PIPR","PNFP",
+        "PRIMERICA","PX","ARES","BEN","VRTS","WDR","WETF","WSFS","ESSA","BANR",
+        # Tech / Telecom on NYSE
+        "ADNT","AGYS","AIOT","ALRM","AMSC","ANGI","AOSL","ASX","ATNI","BAND",
+        "BCEI","BLKB","CEVA","COMM","CSGS","CTXS","DOMO","DTSI","DXC","EGHT",
+        "EXTR","FARO","FCNCA","FEYE","FIVN","FOXF","FRSH","FTDR","GFAI","GIGA",
+        # More NYSE-listed ETFs & CEFs
+        "PDI","PDO","PTY","RFI","RQI","RVT","UTF","UTG","USA","AWF","BIT","BLW",
+        "BME","BNY","BST","CII","CLM","CRF","CSQ","DFP","EAD","EOS","ETV","ETW",
+        "EVN","EXG","FFC","FIF","FLC","FMN","GAB","GAM","GCV","GDL","GDO","GGN",
+        "GGZ","GLQ","GLU","GLV","GNT","GOF","GRR","GUT","HIO","HPS","HTD","HYB",
+        "HYT","IGA","IGD","IGI","IGR","JCE","JDD","JEQ","JGH","JHB","JHD","JHS",
+        "JHY","JMT","JPC","JPI","JPT","KTF","LDP","LGI","MCI","MCN","MHD","MHF",
+        "MHI","MIE","MIM","MIN","MIO","MLP","MMT","MNP","MOF","MPV","MQT","MQY",
+        "MSD","MSG","MUC","MUE","MUI","MUS","MVF","MYD","MYF","MYN","NAD","NBB",
+        "NBD","NBH","NBO","NBW","NCA","NCB","NCP","NCV","NCZ","NDB","NEA","NEV",
+        "NGZ","NHS","NID","NIM","NIO","NIQ","NKX","NMI","NMO","NMS","NMT","NMZ",
+    ]
     if tickers:
-        return list(dict.fromkeys(tickers))   # deduplicate
-    return EXCHANGE_TICKERS[exchange]         # fallback
+        combined = list(dict.fromkeys(tickers + EXTRA_NYSE))
+        return combined
+    return list(dict.fromkeys(EXCHANGE_TICKERS[exchange] + EXTRA_NYSE))
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
