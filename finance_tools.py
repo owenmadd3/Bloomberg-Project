@@ -245,6 +245,36 @@ SEARCH_KEYWORD_MAP = {
     "5-year pretax net income":      "5-Year Avg Pretax Income",
     "average pretax net income":     "5-Year Avg Pretax Income",
     "avg pretax net income":         "5-Year Avg Pretax Income",
+    "price to book":                 "P/B Ratio",
+    "price-to-book":                 "P/B Ratio",
+    "p/b ratio":                     "P/B Ratio",
+    "p/b":                           "P/B Ratio",
+    "pb ratio":                      "P/B Ratio",
+    "price book":                    "P/B Ratio",
+    "price to book value":           "P/B Ratio",
+    "price to sales":                "P/S Ratio",
+    "price-to-sales":                "P/S Ratio",
+    "p/s ratio":                     "P/S Ratio",
+    "p/s":                           "P/S Ratio",
+    "ps ratio":                      "P/S Ratio",
+    "price sales":                   "P/S Ratio",
+    "price to revenue":              "P/S Ratio",
+    "price to earnings":             "P/E Ratio",
+    "price-to-earnings":             "P/E Ratio",
+    "p/e ratio":                     "P/E Ratio",
+    "pe ratio":                      "P/E Ratio",
+    "price earnings":                "P/E Ratio",
+    "price to free cash flow":       "P/FCF Ratio",
+    "price-to-free-cash-flow":       "P/FCF Ratio",
+    "p/fcf":                         "P/FCF Ratio",
+    "price fcf":                     "P/FCF Ratio",
+    "ev/ebitda":                     "EV/EBITDA",
+    "ev ebitda":                     "EV/EBITDA",
+    "enterprise value ebitda":       "EV/EBITDA",
+    "enterprise value to ebitda":    "EV/EBITDA",
+    "enterprise value":              "Enterprise Value",
+    "market cap":                    "Market Cap",
+    "market capitalization":         "Market Cap",
     "earnings yield":                "Earnings Yield %",
     "earning yield":                 "Earnings Yield %",
     "earnings yield %":              "Earnings Yield %",
@@ -498,7 +528,9 @@ def _add_derived_metrics(df):
         df.loc["Debt/Equity"] = total_debt / eq
     return df
 
-RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %","5-Year Avg Pretax Income","Earnings Yield %"}
+RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity",
+                "10-Year Avg ROE %","5-Year Avg Pretax Income","Earnings Yield %",
+                "P/B Ratio","P/S Ratio","P/E Ratio","P/FCF Ratio","EV/EBITDA"}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_10yr_roe(ticker):
@@ -580,6 +612,113 @@ def compute_earnings_yield(ticker):
 def _is_earnings_yield_query(question):
     q = question.lower()
     return "earnings yield" in q or "earning yield" in q or "eps yield" in q or (("e/p" in q) and ("ratio" in q or "yield" in q))
+
+@st.cache_data(ttl=120, show_spinner=False)
+def compute_valuation_ratios(ticker):
+    """
+    Returns a dict of valuation ratios using EDGAR fundamentals + live price.
+    Ratios: P/E, P/B, P/S, P/FCF, EV/EBITDA, Market Cap, Enterprise Value.
+    """
+    try:
+        price_data = fetch_price_data(ticker)
+        price = price_data.get("currentPrice")
+        if not price or price <= 0:
+            return {}
+
+        cik = get_cik(ticker)
+        if not cik:
+            return {}
+        facts = get_edgar_facts(cik)
+        inc = extract_edgar_annual(facts, EDGAR_INCOME)
+        bal = extract_edgar_annual(facts, EDGAR_BALANCE)
+        cf_map = {k: v for k, v in EDGAR_CASHFLOW.items() if v}
+        cf  = extract_edgar_annual(facts, cf_map)
+
+        def latest(df, label):
+            if df.empty or label not in df.index:
+                return None
+            row = df.loc[label].dropna()
+            return float(row[max(row.index)]) if not row.empty else None
+
+        eps        = latest(inc, "EPS Diluted")
+        revenue    = latest(inc, "Revenue")
+        net_income = latest(inc, "Net Income")
+        op_income  = latest(inc, "Operating Income")
+        da         = latest(inc, "Depreciation & Amort")
+        shares     = latest(inc, "Shares Outstanding")
+        equity     = latest(bal, "Total Equity")
+        cash       = latest(bal, "Cash & Equivalents")
+        lt_debt    = latest(bal, "Long-Term Debt") or 0
+        st_debt    = latest(bal, "Short-Term Debt") or 0
+        op_cf      = latest(cf,  "Operating Cash Flow")
+        capex      = latest(cf,  "Capital Expenditures")
+
+        ratios = {}
+
+        # Market Cap
+        if shares:
+            mkt_cap = price * shares
+            ratios["Market Cap"] = mkt_cap
+        else:
+            mkt_cap = None
+
+        # P/E
+        if eps and eps > 0:
+            ratios["P/E Ratio"] = round(price / eps, 2)
+
+        # P/B
+        if shares and equity and equity > 0:
+            bvps = equity / shares
+            ratios["P/B Ratio"] = round(price / bvps, 2)
+
+        # P/S
+        if shares and revenue and revenue > 0:
+            ratios["P/S Ratio"] = round((price * shares) / revenue, 2)
+
+        # P/FCF
+        if shares and op_cf is not None and capex is not None:
+            fcf = op_cf - abs(capex)
+            if fcf > 0:
+                ratios["P/FCF Ratio"] = round((price * shares) / fcf, 2)
+
+        # EV/EBITDA
+        if mkt_cap is not None:
+            total_debt = lt_debt + st_debt
+            ev = mkt_cap + total_debt - (cash or 0)
+            ratios["Enterprise Value"] = ev
+            ebitda = None
+            if op_income is not None and da is not None:
+                ebitda = op_income + abs(da)
+            elif op_income is not None:
+                ebitda = op_income
+            if ebitda and ebitda > 0:
+                ratios["EV/EBITDA"] = round(ev / ebitda, 2)
+
+        return ratios
+    except Exception:
+        return {}
+
+_VALUATION_KEYWORDS = {
+    "p/b": "P/B Ratio", "price to book": "P/B Ratio", "price-to-book": "P/B Ratio",
+    "pb ratio": "P/B Ratio", "book value ratio": "P/B Ratio",
+    "p/s": "P/S Ratio", "price to sales": "P/S Ratio", "price-to-sales": "P/S Ratio",
+    "ps ratio": "P/S Ratio", "price to revenue": "P/S Ratio",
+    "p/e": "P/E Ratio", "price to earnings": "P/E Ratio", "pe ratio": "P/E Ratio",
+    "price earnings": "P/E Ratio",
+    "p/fcf": "P/FCF Ratio", "price to free cash flow": "P/FCF Ratio",
+    "ev/ebitda": "EV/EBITDA", "ev ebitda": "EV/EBITDA",
+    "enterprise value to ebitda": "EV/EBITDA",
+    "enterprise value": "Enterprise Value",
+    "market cap": "Market Cap", "market capitalization": "Market Cap",
+}
+
+def _valuation_ratio_requested(question):
+    """Returns the specific ratio name if the question asks for a valuation ratio, else None."""
+    q = question.lower()
+    for kw, ratio in sorted(_VALUATION_KEYWORDS.items(), key=lambda x: -len(x[0])):
+        if kw in q:
+            return ratio
+    return None
 
 def extract_edgar_annual(facts, concept_map):
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -957,8 +1096,30 @@ if ai_question and search_btn:
                         s_name = meta.get("name") or search_ticker
                     except Exception:
                         s_name = search_ticker
+                # ── Valuation ratios — special path ───────────────────────
+                _requested_ratio = _valuation_ratio_requested(ai_question)
+                if _requested_ratio:
+                    ratios = compute_valuation_ratios(search_ticker)
+                    val = ratios.get(_requested_ratio)
+                    if val is not None:
+                        if _requested_ratio in ("Market Cap", "Enterprise Value"):
+                            fv = fmt_large(val)
+                            suffix = ""
+                        else:
+                            fv = f"{val:.2f}x"
+                            suffix = "x"
+                        st.markdown(f"""
+                        <div class="answer-box">
+                            <div class="answer-label">{s_name} ({search_ticker}) · SEC EDGAR 10-K + Live Price</div>
+                            <div class="answer-item">{_requested_ratio}</div>
+                            <div class="answer-value">{fv}</div>
+                            <div class="answer-meta">Based on most recent annual filing &amp; current market price</div>
+                        </div>""", unsafe_allow_html=True)
+                    else:
+                        st.info(f"{_requested_ratio} not available for {s_name} ({search_ticker}) — insufficient EDGAR data.")
+
                 # ── Earnings Yield — special path ─────────────────────────
-                if _is_earnings_yield_query(ai_question):
+                elif _is_earnings_yield_query(ai_question):
                     ey, eps, price = compute_earnings_yield(search_ticker)
                     if ey is not None:
                         ey_color = "#16a34a" if ey >= 0 else "#dc2626"
@@ -1335,6 +1496,33 @@ def show_profile(ticker):
                 xaxis=dict(tickfont=dict(size=10, color="#64748b"), showgrid=False),
             )
             st.plotly_chart(fig_pt, width="stretch")
+
+        # Valuation Ratios
+        val_ratios = compute_valuation_ratios(ticker)
+        if val_ratios:
+            st.markdown('<div class="section-header">Valuation Ratios</div>', unsafe_allow_html=True)
+            RATIO_DISPLAY = [
+                ("P/E Ratio",        "Price / Earnings",        "x"),
+                ("P/B Ratio",        "Price / Book Value",      "x"),
+                ("P/S Ratio",        "Price / Sales",           "x"),
+                ("P/FCF Ratio",      "Price / Free Cash Flow",  "x"),
+                ("EV/EBITDA",        "EV / EBITDA",             "x"),
+                ("Market Cap",       "Market Capitalisation",   "$"),
+                ("Enterprise Value", "Enterprise Value",        "$"),
+            ]
+            v1, v2 = st.columns(2)
+            for i, (key, label, unit) in enumerate(RATIO_DISPLAY):
+                v = val_ratios.get(key)
+                if v is None:
+                    continue
+                display = fmt_large(v) if unit == "$" else f"{v:.2f}x"
+                (v1 if i % 2 == 0 else v2).markdown(
+                    f'<div class="metric-card">'
+                    f'<div class="metric-label">{label}</div>'
+                    f'<div class="metric-value">{display}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
         # Financial statements — SEC EDGAR (always works on cloud)
         st.markdown('<div class="section-header">Financial Statements (SEC EDGAR · back to ~2001)</div>', unsafe_allow_html=True)
