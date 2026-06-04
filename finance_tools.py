@@ -233,6 +233,18 @@ SEARCH_KEYWORD_MAP = {
     "leverage ratio":                "Debt/Equity",
     "sg&a":                          "SG&A Expense",
     "selling general and administrative": "SG&A Expense",
+    "5 year pretax income":          "5-Year Avg Pretax Income",
+    "5yr pretax income":             "5-Year Avg Pretax Income",
+    "5-year pretax income":          "5-Year Avg Pretax Income",
+    "5 year pre tax income":         "5-Year Avg Pretax Income",
+    "5-year pre-tax income":         "5-Year Avg Pretax Income",
+    "average pretax income":         "5-Year Avg Pretax Income",
+    "avg pretax income":             "5-Year Avg Pretax Income",
+    "5 year pretax net income":      "5-Year Avg Pretax Income",
+    "5yr pretax net income":         "5-Year Avg Pretax Income",
+    "5-year pretax net income":      "5-Year Avg Pretax Income",
+    "average pretax net income":     "5-Year Avg Pretax Income",
+    "avg pretax net income":         "5-Year Avg Pretax Income",
     "10 year roe":                   "10-Year Avg ROE %",
     "10yr roe":                      "10-Year Avg ROE %",
     "10-year roe":                   "10-Year Avg ROE %",
@@ -478,7 +490,7 @@ def _add_derived_metrics(df):
         df.loc["Debt/Equity"] = total_debt / eq
     return df
 
-RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %"}
+RATIO_LABELS = {"ROE %","ROA %","Gross Margin %","Operating Margin %","Net Margin %","FCF Margin %","Debt/Equity","10-Year Avg ROE %","5-Year Avg Pretax Income"}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def compute_10yr_roe(ticker):
@@ -506,6 +518,32 @@ def _is_10yr_roe_query(question):
     has_10  = "10" in q or "ten year" in q or "decade" in q
     has_roe = "roe" in q or "return on equity" in q
     return has_10 and has_roe
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_5yr_pretax_income(ticker):
+    """Returns (avg, {year: pretax_income}) from SEC EDGAR 10-K data (up to 5 years)."""
+    cik = get_cik(ticker)
+    if not cik:
+        return None, {}
+    try:
+        facts = get_edgar_facts(cik)
+        df = extract_edgar_annual(facts, EDGAR_INCOME)
+        if df.empty or "Pretax Income" not in df.index:
+            return None, {}
+        row = df.loc["Pretax Income"].dropna()
+        years = sorted(row.index, reverse=True)[:5]
+        year_data = {y: float(row[y]) for y in sorted(years)}
+        avg = float(row[list(years)].mean())
+        return avg, year_data
+    except Exception:
+        return None, {}
+
+def _is_5yr_pretax_query(question):
+    q = question.lower()
+    has_5      = "5" in q or "five year" in q
+    has_pretax = "pretax" in q or "pre-tax" in q or "pre tax" in q
+    has_income = "income" in q or "net income" in q or "earnings" in q or "profit" in q
+    return has_5 and has_pretax and has_income
 
 def extract_edgar_annual(facts, concept_map):
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -883,8 +921,41 @@ if ai_question and search_btn:
                         s_name = meta.get("name") or search_ticker
                     except Exception:
                         s_name = search_ticker
+                # ── 5-Year Avg Pretax Income — special path ───────────────
+                if _is_5yr_pretax_query(ai_question):
+                    avg_pt, pt_by_year = compute_5yr_pretax_income(search_ticker)
+                    if avg_pt is not None and pt_by_year:
+                        avg_color = "#16a34a" if avg_pt >= 0 else "#dc2626"
+                        avg_sign  = "+" if avg_pt >= 0 else ""
+                        yrs = sorted(pt_by_year.keys())
+                        rows_html = "".join(
+                            f"<tr><td style='padding:5px 12px;color:#64748b;'>{y}</td>"
+                            f"<td style='padding:5px 12px;text-align:right;"
+                            f"color:{'#16a34a' if pt_by_year[y]>=0 else '#dc2626'};font-weight:600;'>"
+                            f"{fmt_large(pt_by_year[y])}</td></tr>"
+                            for y in sorted(yrs, reverse=True)
+                        )
+                        st.markdown(f"""
+                        <div class="answer-box">
+                            <div class="answer-label">{s_name} ({search_ticker}) · SEC EDGAR 10-K</div>
+                            <div class="answer-item">5-Year Average Pretax Net Income ({yrs[0]}–{yrs[-1]})</div>
+                            <div class="answer-value" style="color:{avg_color};">{avg_sign}{fmt_large(avg_pt)}</div>
+                            <div class="answer-meta">{len(yrs)} fiscal years averaged</div>
+                        </div>""", unsafe_allow_html=True)
+                        with st.expander("Year-by-year breakdown"):
+                            st.markdown(
+                                f'<table style="width:100%;font-family:Inter,sans-serif;font-size:12px;">'
+                                f'<thead><tr>'
+                                f'<th style="text-align:left;padding:5px 12px;color:#94a3b8;font-size:10px;text-transform:uppercase;">Year</th>'
+                                f'<th style="text-align:right;padding:5px 12px;color:#94a3b8;font-size:10px;text-transform:uppercase;">Pretax Income</th>'
+                                f'</tr></thead><tbody>{rows_html}</tbody></table>',
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        st.info(f"5-year pretax income data not available for {s_name} ({search_ticker}) — SEC EDGAR may not have sufficient history.")
+
                 # ── 10-Year ROE — special path ─────────────────────────────
-                if _is_10yr_roe_query(ai_question):
+                elif _is_10yr_roe_query(ai_question):
                     avg_roe, year_data = compute_10yr_roe(search_ticker)
                     if avg_roe is not None and year_data:
                         sign = "+" if avg_roe >= 0 else ""
@@ -1173,6 +1244,39 @@ def show_profile(ticker):
                 xaxis=dict(tickfont=dict(size=10, color="#64748b"), showgrid=False),
             )
             st.plotly_chart(fig_roe, width="stretch")
+
+        # 5-Year Avg Pretax Income
+        avg_pt, pt_by_year = compute_5yr_pretax_income(ticker)
+        if avg_pt is not None and pt_by_year:
+            st.markdown('<div class="section-header">5-Year Average Pretax Net Income</div>', unsafe_allow_html=True)
+            pt_color = "#16a34a" if avg_pt >= 0 else "#dc2626"
+            pt_sign  = "+" if avg_pt >= 0 else ""
+            yrs_pt   = sorted(pt_by_year.keys())
+            st.markdown(
+                f'<div class="metric-card" style="margin-bottom:12px;">'
+                f'<div class="metric-label">5-Year Average Pretax Income ({yrs_pt[0]}–{yrs_pt[-1]})</div>'
+                f'<div class="metric-value" style="color:{pt_color};font-size:24px;">{pt_sign}{fmt_large(avg_pt)}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            bar_colors_pt = ["#16a34a" if v >= 0 else "#dc2626" for v in pt_by_year.values()]
+            fig_pt = go.Figure(go.Bar(
+                x=list(pt_by_year.keys()),
+                y=list(pt_by_year.values()),
+                marker_color=bar_colors_pt,
+                hovertemplate="<b>%{x}</b><br>Pretax Income: $%{y:,.0f}<extra></extra>",
+            ))
+            fig_pt.update_layout(
+                paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+                margin=dict(l=10, r=10, t=10, b=10), height=180,
+                showlegend=False,
+                yaxis=dict(showgrid=True, gridcolor="#e2e8f0",
+                           zeroline=True, zerolinecolor="#cbd5e1",
+                           tickfont=dict(size=10, color="#64748b"),
+                           tickformat="$,.3s"),
+                xaxis=dict(tickfont=dict(size=10, color="#64748b"), showgrid=False),
+            )
+            st.plotly_chart(fig_pt, width="stretch")
 
         # Financial statements — SEC EDGAR (always works on cloud)
         st.markdown('<div class="section-header">Financial Statements (SEC EDGAR · back to ~2001)</div>', unsafe_allow_html=True)
