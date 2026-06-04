@@ -132,7 +132,7 @@ BBG_NAME_HI = {"NYSE": "Bloomberg New 52 Week Highs NYSE", "NASDAQ": "Bloomberg 
 BBG_NAME_LO = {"NYSE": "Bloomberg New 52 Week Lows NYSE",  "NASDAQ": "Bloomberg New 52 Week Lows NASDAQ",  "AMEX": "Bloomberg New 52 Week Lows AMEX"}
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_price_data(tickers: tuple, start_str: str) -> pd.DataFrame:
     batch_size = 200
     ticker_list = list(tickers)
@@ -268,6 +268,15 @@ with st.sidebar:
     exchange  = st.selectbox("Exchange", ["NYSE", "NASDAQ", "AMEX"], index=0)
     st.markdown("---")
     smoothing = st.slider("Smoothing (day MA)", 1, 10, 1)
+
+    st.markdown("---")
+    if st.button("🔄 Force Refresh Data", use_container_width=True):
+        load_price_data.clear()
+        compute_breadth.clear()
+        get_constituents.clear()
+        st.success("Cache cleared — reloading data...")
+        st.rerun()
+    st.caption("Today's closing data available after 4:30 PM ET. Click to pull the latest.")
     st.markdown("---")
 
     view_series  = st.radio("Series detail", ["Highs", "Lows"], horizontal=True)
