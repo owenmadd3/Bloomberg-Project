@@ -14,6 +14,19 @@ try:
 except ImportError:
     YFRateLimitError = None
 
+# ── Browser-impersonating session (fixes Yahoo Finance blocking cloud IPs) ─────
+try:
+    from curl_cffi import requests as cffi_requests
+    _YF_SESSION = cffi_requests.Session(impersonate="chrome")
+except Exception:
+    _YF_SESSION = None
+
+def _ticker(symbol):
+    """Return a yf.Ticker that uses the curl_cffi session when available."""
+    if _YF_SESSION:
+        return yf.Ticker(symbol, session=_YF_SESSION)
+    return yf.Ticker(symbol)
+
 st.set_page_config(
     page_title="Finance Tools",
     page_icon=None,
@@ -625,35 +638,35 @@ def _is_rate_limit(e):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_info(ticker):
-    return yf.Ticker(ticker).info
+    return _ticker(ticker).info
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_history(ticker, period="1y", interval="1d"):
     prepost = interval in ("1m","2m","5m","15m","30m","60m","90m","1h")
-    return yf.Ticker(ticker).history(period=period, interval=interval, prepost=prepost)
+    return _ticker(ticker).history(period=period, interval=interval, prepost=prepost)
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_financials(ticker):
-    t = yf.Ticker(ticker)
+    t = _ticker(ticker)
     return t.financials, t.quarterly_financials, t.balance_sheet, t.quarterly_balance_sheet, t.cashflow, t.quarterly_cashflow
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_earnings(ticker):
-    t = yf.Ticker(ticker)
+    t = _ticker(ticker)
     return t.earnings_history, t.calendar
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_news(ticker):
-    return yf.Ticker(ticker).news
+    return _ticker(ticker).news
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_analyst(ticker):
-    t = yf.Ticker(ticker)
+    t = _ticker(ticker)
     return t.analyst_price_targets, t.recommendations_summary
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_insider(ticker):
-    return yf.Ticker(ticker).insider_transactions
+    return _ticker(ticker).insider_transactions
 
 # ── Global CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -966,7 +979,7 @@ def show_profile(ticker):
             @st.fragment(run_every=15)
             def live_price_block():
                 try:
-                    fi  = yf.Ticker(ticker).fast_info
+                    fi  = _ticker(ticker).fast_info
                     lp  = getattr(fi, "last_price", None) or price
                     pc  = getattr(fi, "previous_close", None) or prev_close
                     dh  = getattr(fi, "day_high", None) or day_high
