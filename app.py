@@ -80,20 +80,20 @@ def save_picks_history(history):
         json.dump(history, f, indent=2)
 
 def record_daily_picks(picks):
-    """Save today's picks once per day, but only after market close (4:00 PM ET).
+    """Save today's picks once per day, but only after 6:00 PM CT.
     Skips weekends since the market is closed."""
     from zoneinfo import ZoneInfo
-    et_now = datetime.now(ZoneInfo("America/New_York"))
+    ct_now = datetime.now(ZoneInfo("America/Chicago"))
 
     # Skip weekends (Saturday=5, Sunday=6)
-    if et_now.weekday() >= 5:
+    if ct_now.weekday() >= 5:
         return
 
-    # Only record after 4:00 PM ET (market close)
-    if et_now.hour < 16:
+    # Only record after 6:00 PM CT
+    if ct_now.hour < 18:
         return
 
-    today = et_now.strftime("%Y-%m-%d")
+    today = ct_now.strftime("%Y-%m-%d")
     history = load_picks_history()
     existing_dates = {e["date"] for e in history}
     if today in existing_dates:
