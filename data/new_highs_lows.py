@@ -216,59 +216,79 @@ def fetch_exchange_tickers(exchange: str) -> list:
             pass
 
     # Supplement with hardcoded NYSE tickers not in S&P indices
+    # Focus: CEFs, mREITs, BDCs, shipping, small-cap banks — these drive the big LOW spikes
     EXTRA_NYSE = [
-        # Regional banks
-        "CFG","FITB","RF","HBAN","KEY","CMA","SNV","BOKF","UMBF","WTFC","IBCP","WASH",
-        "NBTB","FULT","WSBC","EGBN","SBCF","TRMK","BANF","FFIN","CVBF","CADE","SFNC",
-        "HOPE","BHLB","INDB","PKBK","NFBK","TOWN","AMNB","CTBI","ESSA","AROW","THFF",
-        # REITs
-        "NNN","STAG","COLD","IIPR","UNIT","GMRE","PLYM","GOOD","HASI","PINE","FCPT",
-        "NLCP","NTST","PSTL","LAND","GIPR","MDRR","CONDUIT","NXRT","ILPT","BRSP","GNL",
-        "ACRE","BXMT","RC","TRTX","KREF","GPMT","LADR","FBRT","SACH","ACR","MVRL",
-        "FRT","KIM","REG","BRX","ROIC","RPAI","WRI","SITC","AKR","UE","CBL","MAC",
-        "SKT","TCO","WPG","PEI","KRG","RPAI","UBA","RVI","WHLR","CLPR","FOR","NXRT",
-        # MLPs & Energy
-        "MMP","PAA","PAGP","EPD","ET","WES","TRGP","OKE","KMI","LNG","CTRA","APA",
-        "MUR","SM","CPE","MTDR","ESTE","MGY","CIVI","VTLE","NOG","ESTE","REI","TALO",
-        "WTI","SWN","RRC","CNX","GPOR","ARCH","CEIX","AMR","ARLP","FANG","PR","BATL",
-        # Insurance
-        "PRG","AIZ","UNM","PFG","FG","CNO","GL","ALAB","NAVG","PLMR","KINGSWAY",
-        "HIG","MFC","SFG","FNF","FAF","STC","ITIC","STFC","ERIE","CINF","RLI","EMC",
-        # Utilities
-        "WEC","ES","ETR","AEE","CNP","LNT","OGE","NWE","OTTR","IDA","AVA","PNM",
-        "UTL","SPKE","GAS","NJR","SR","SJI","SWX","RGCO","NGAS","GBNK","ARTNA",
-        # Healthcare / Biotech
-        "THC","UHS","CYH","LPNT","ENSG","ADUS","AFYA","AMEDISYS","CCRN","NKTR",
-        "PRTK","RCUS","SRRX","TVTX","VRCA","ACCD","AGL","AMEH","AMED","ARDX",
-        "BNTX","BNGO","CBPO","CDNA","CHRS","CLDX","CLVS","CMPS","CNMD","CPRX",
-        # Industrials
-        "AIN","ALG","ALGT","AMWD","AX","B","BSET","CLH","CSWI","DNOW","DY","EXP",
-        "FBHS","FELE","FLOW","FN","GFF","HLIO","HNI","HRI","HUBB","IIIN","IPAR",
-        "JBTM","KAI","KFRC","LNN","MFIN","MGRC","MYRG","NACCO","NCS","NETI","NHC",
-        "NPO","NVR","ORN","PRIM","RXN","SSD","SXC","SXT","TILE","TREX","TRS","VSM",
-        # Consumer
-        "BURL","CATO","CONN","DDS","DXLG","ERI","EVRI","EYE","FL","GCO","GNC",
-        "HBI","HIBB","JWN","KSS","LB","LESL","LGF-A","LGND","LKFN","LOCO","LOVE",
-        "LUCK","MDVX","MIK","MLHR","MNRO","MOD","MOV","MRCY","MWA","NATH","NDLS",
-        "PLAY","POOL","PRGO","PVH","RAVE","RCII","ROST","RUTH","RXRX","SASS","SBH",
-        # Financial services
-        "COOP","CACC","ECPG","JEF","LAZ","MC","MFAC","NMM","OPY","PIPR","PNFP",
-        "PRIMERICA","PX","ARES","BEN","VRTS","WDR","WETF","WSFS","ESSA","BANR",
-        # Tech / Telecom on NYSE
-        "ADNT","AGYS","AIOT","ALRM","AMSC","ANGI","AOSL","ASX","ATNI","BAND",
-        "BCEI","BLKB","CEVA","COMM","CSGS","CTXS","DOMO","DTSI","DXC","EGHT",
-        "EXTR","FARO","FCNCA","FEYE","FIVN","FOXF","FRSH","FTDR","GFAI","GIGA",
-        # More NYSE-listed ETFs & CEFs
-        "PDI","PDO","PTY","RFI","RQI","RVT","UTF","UTG","USA","AWF","BIT","BLW",
-        "BME","BNY","BST","CII","CLM","CRF","CSQ","DFP","EAD","EOS","ETV","ETW",
-        "EVN","EXG","FFC","FIF","FLC","FMN","GAB","GAM","GCV","GDL","GDO","GGN",
-        "GGZ","GLQ","GLU","GLV","GNT","GOF","GRR","GUT","HIO","HPS","HTD","HYB",
-        "HYT","IGA","IGD","IGI","IGR","JCE","JDD","JEQ","JGH","JHB","JHD","JHS",
-        "JHY","JMT","JPC","JPI","JPT","KTF","LDP","LGI","MCI","MCN","MHD","MHF",
-        "MHI","MIE","MIM","MIN","MIO","MLP","MMT","MNP","MOF","MPV","MQT","MQY",
-        "MSD","MSG","MUC","MUE","MUI","MUS","MVF","MYD","MYF","MYN","NAD","NBB",
-        "NBD","NBH","NBO","NBW","NCA","NCB","NCP","NCV","NCZ","NDB","NEA","NEV",
-        "NGZ","NHS","NID","NIM","NIO","NIQ","NKX","NMI","NMO","NMS","NMT","NMZ",
+        # ── mREITs (mortgage REITs — very volatile, spike hard on rate moves) ──
+        "AGNC","NLY","MFA","RWT","MITT","ARR","TWO","IVR","CIM","PMT","RITM","NYMT",
+        "BRMK","EARN","CHMI","ORC","NREF","GPMT","TRTX","KREF","RC","ACRE","BXMT",
+        "LADR","FBRT","ACR","SACH","ARI","BRSP","GNL","ILPT","RLJ","SHO","PK","XHR",
+        # ── BDCs (Business Development Companies — leveraged, sell off sharply) ──
+        "ARCC","MAIN","ORCC","FS","HTGC","GBDC","BXSL","PSEC","GSBD","TPVG","GAIN",
+        "GLAD","HRZN","MRCC","SLRC","PFLT","KCAP","WHF","TCPC","BCSF","CGBD","CSWC",
+        "FDUS","FSK","NMFC","OCSL","PNNT","SCM","SUNS","TICC","TRIN","UFCS","SAR",
+        # ── CEFs — Fixed Income (rate sensitive, big drawdowns) ──────────────────
+        "PDI","PDO","PTY","PCI","PCN","PKO","PFN","PHK","PHT","PIM","PPT","PTA",
+        "RFI","RQI","RSF","RNP","RCS","RVT","RMT","RHY","RFM","RFC","RFT","RFP",
+        "UTF","UTG","USA","AWF","BIT","BLW","BME","BNY","BST","CII","CLM","CRF",
+        "CSQ","DFP","EAD","EOS","ETV","ETW","EVN","EXG","FFC","FIF","FLC","FMN",
+        "GAB","GAM","GCV","GDL","GDO","GGN","GGZ","GLQ","GOF","GRR","GUT","HIO",
+        "HPS","HTD","HYB","HYT","IGA","IGD","IGR","JCE","JDD","JEQ","JGH","JHB",
+        "JHD","JHS","JHY","JMT","JPI","KTF","LDP","LGI","MCI","MCN","MHD","MHF",
+        "MHI","MIN","MIO","MLP","MMT","MNP","MOF","MPV","MQT","MSD","MUC","MUE",
+        "MUI","MUS","MVF","MYD","MYF","MYN","NAD","NBB","NBD","NBH","NBO","NBW",
+        "NCA","NCB","NCP","NCV","NCZ","NEA","NEV","NGZ","NHS","NID","NIM","NIQ",
+        "NKX","NMI","NMO","NMS","NMT","NMZ","NPI","NPV","NQP","NQU","NRK","NUO",
+        "NVG","NXP","NZF","OIA","PCF","PML","PMM","PMO","PMX","PNF","PNI","PPR",
+        "PSF","PTX","PYN","RFI","RHY","RMM","RPT","RSF","RVP","SAF","SBI","SCD",
+        "SCY","SDF","SDT","SGL","SIM","SJT","SOR","SQS","SRH","STO","SUS","SVT",
+        "SZC","TDF","TEI","TFI","TLI","TLP","TMF","TOO","TPZ","TRF","TSI","TTP",
+        "TUZ","TWN","TYG","TYW","UCO","UMH","USA","USB","UVV","VBF","VCV","VGM",
+        "VHI","VJV","VMM","VPV","VST","VTN","WDI","WIA","WIW","WMC","WPC","WPG",
+        # ── CEFs — Equity (convertible, covered call) ─────────────────────────
+        "AGC","AGD","ASG","BIF","BOE","BRW","CAF","CBH","CEM","CHI","CHW","CHY",
+        "CLM","CRF","DNI","DSU","EDD","EDI","EFT","EGF","EIA","EMD","EMF","EMO",
+        "ENX","EOD","ERH","ETB","ETV","EVF","EVG","EVJ","EVN","EVO","EVP","EVT",
+        "EVV","EVX","EWC","FAX","FCA","FCT","FEO","FFA","FFB","FFC","FFN","FFR",
+        "FGB","FGI","FHY","FIF","FLC","FMN","FMO","FMY","FNB","FNF","FNI","FNX",
+        # ── Shipping (extremely volatile, major low spikes) ───────────────────
+        "DAC","SB","SBLK","GOGL","EGLE","SALT","GNK","IMOS","CPLP","TNP","NMM",
+        "DSX","DHTX","FRO","INSW","NAT","Nordic","STNG","TK","TNK","TOO","TOPS",
+        "TRMD","ASC","GRIN","MPCC","OET","PNFP","SFL","SHPW","SINO","SSW","GASS",
+        # ── Small/micro cap NYSE stocks (key for low spikes) ─────────────────
+        "AMR","AMRK","AMRS","AMSC","AMT","AMTB","AMTD","AMTI","AMTX","AMWD",
+        "AMWL","ANF","ANGI","ANGO","ANH","ANIK","ANIP","ANNT","ANV","ANSS",
+        # ── Small-cap regional banks (pile into lows during credit stress) ────
+        "ABCB","ACNB","AMNB","ANCX","AROW","ARTNA","ASRV","ATLO","BANF",
+        "BANR","BCBP","BDGE","BFIN","BFST","BHLB","BLMT","BMTC","BOKF",
+        # ── Energy small caps (major sell-off candidates) ─────────────────────
+        "BCEI","BATL","BRY","CDEV","CEQP","CLMT","CMLP","CNXM","CODI","CPAC",
+        "CRGY","CVIA","DKL","DPM","EE","ESTE","GEL","GLP","GPOR","HESM","HEP",
+        "HFC","HMLP","HTGM","HUSA","INDO","JCAP","KRP","LGCY","MCEP","MEMP",
+        "MRC","MRVL","MTDR","MUSA","NCSM","NGL","NRGX","NRGY","NTI","NVGS",
+        "OAS","OMP","PBFX","PDCE","PEGI","PNRG","PTEN","PW","REGI","REXX",
+        "RMP","ROSE","ROYT","RRGB","RTLR","RUN","SDRL","SIRE","SMLP","SNDE",
+        "SND","SNMP","SOGO","SPKE","SPRB","SRLP","SRMX","SRRK","SRTX","SS",
+        # ── Small-cap consumer & retail (hit hard in downturns) ───────────────
+        "CATO","DDS","CONN","GCO","HIBB","RCII","RENT","RUTH","SBH","SCVL",
+        "TLYS","TURK","UEIC","URBN","VSTO","WINA","WLFC","WLTW","WOR","WS",
+        # ── Specialty finance & leasing ───────────────────────────────────────
+        "AEL","AGFS","AIZ","AJG","ALEX","AL","AXS","BOC","CATO","CFB","CFR",
+        "CLBK","CNO","COOP","CSV","DFB","ENVA","EQBK","EFC","FBP","FCFS","FCNCA",
+        "FFBC","FFBH","FFIN","FFNW","FISI","FLIC","FLY","FMBH","FNB","FNWB",
+        "FULT","GABC","GCBC","GNTY","HAFC","HBCP","HBMD","HBNC","HCI","HFWA",
+        "HIFS","HMN","HONE","HTBK","HTLF","HWBK","IIIV","ISTR","JFIN","JNCE",
+        "LAD","LC","LKFN","LMST","LNDC","LOAN","LOB","LSCC","LTRX","MBIN",
+        "MCB","MCBC","MFNB","MGYR","MNSB","MOFG","MRLN","MSBI","MSBF","NBTB",
+        "NFBK","NKSH","NOBC","NRBC","NTRS","OFG","OPBK","OPHC","OPIC","OPY",
+        "OSBC","OVBC","OVLY","PBIP","PBPB","PCSB","PEBO","PFBI","PFIS","PFNL",
+        "PKBK","PLBC","PLYM","PMBC","PNFP","PRBM","PRSP","PVBC","PWOD","RBCAA",
+        "RBNC","RCBK","RDUS","RELL","RNDB","RNST","RVSB","SASR","SBFG","SBSI",
+        "SCBT","SFBC","SFNC","SFST","SGBX","SHBI","SIFI","SIVB","SLCT","SMBC",
+        "SMMF","SNFCA","SNFS","SRBK","SSBK","SSBI","STBA","STBZ","STCN","STXB",
+        "TCBK","TCFC","THBK","TBNK","TRMK","TROW","TRST","UBCP","UBFO","UBOH",
+        "UBSI","UCBI","UMBF","UMPQ","UNTY","UVSP","VBTX","VFIN","VIRT","VNBC",
+        "VRNF","VSEC","WABC","WAFD","WASH","WBNK","WBKC","WCFB","WDFC","WFBI",
+        "WMPN","WNBI","WSBC","WSFS","WTBA","WTFC","WVFC","YDKN","YORW","ZION",
     ]
     if tickers:
         combined = list(dict.fromkeys(tickers + EXTRA_NYSE))
