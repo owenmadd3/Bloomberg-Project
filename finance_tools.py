@@ -308,13 +308,13 @@ NAME_OVERRIDES = {
     "meta": "META",
     "jpmorgan": "JPM", "jp morgan": "JPM", "chase": "JPM",
     "goldman": "GS", "goldman sachs": "GS",
-    "berkshire": "BRK-B",
+    "berkshire": "BRK-B", "brk": "BRK-B", "brk-b": "BRK-B", "brk.b": "BRK-B",
     "exxon": "XOM", "exxonmobil": "XOM",
     "walmart": "WMT",
     "johnson": "JNJ",
     "procter": "PG", "procter and gamble": "PG",
     "mastercard": "MA",
-    "visa": "V",
+    "visa": "V", "v": "V",
     "home depot": "HD",
     "chevron": "CVX",
     "coca cola": "KO", "coke": "KO", "coca-cola": "KO",
@@ -433,7 +433,8 @@ def extract_ticker_from_question(question, provided_ticker=None):
             return result
         return t.upper(), t.upper()
     q_low = question.lower()
-    tokens = re.findall(r'\b([A-Z]{2,5})\b', question)
+    # Match hyphenated tickers (BRK-B), standard tickers (AAPL), and single-letter tickers (V, F, T)
+    tokens = re.findall(r'\b([A-Z]{1,5}(?:-[A-Z]{1,2})?)\b', question)
     for tok in tokens:
         if tok in ticker_set:
             name = next((n for s, n in companies if s == tok), tok)
