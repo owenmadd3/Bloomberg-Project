@@ -79,13 +79,20 @@ def save_picks_history(history):
     with open(PICKS_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
+def next_trading_day(dt):
+    """Return the next weekday (Mon–Fri) after dt."""
+    nxt = dt + timedelta(days=1)
+    while nxt.weekday() >= 5:  # skip Saturday (5) and Sunday (6)
+        nxt += timedelta(days=1)
+    return nxt
+
 def record_daily_picks(picks):
-    """Save today's picks once per day, but only after 6:00 PM CT.
-    Skips weekends since the market is closed."""
+    """Save picks once per day after 6:00 PM CT, dated to the NEXT trading day
+    so they appear in the tracker when markets open tomorrow."""
     from zoneinfo import ZoneInfo
     ct_now = datetime.now(ZoneInfo("America/Chicago"))
 
-    # Skip weekends (Saturday=5, Sunday=6)
+    # Skip weekends — no picks for the weekend
     if ct_now.weekday() >= 5:
         return
 
@@ -93,15 +100,16 @@ def record_daily_picks(picks):
     if ct_now.hour < 18:
         return
 
-    today = ct_now.strftime("%Y-%m-%d")
+    # Store under the next trading day's date
+    target_date = next_trading_day(ct_now).strftime("%Y-%m-%d")
     history = load_picks_history()
     existing_dates = {e["date"] for e in history}
-    if today in existing_dates:
+    if target_date in existing_dates:
         return
 
     for pick in picks:
         history.append({
-            "date":          today,
+            "date":          target_date,
             "sym":           pick["sym"],
             "name":          pick["name"],
             "price_at_pick": pick["price"],
