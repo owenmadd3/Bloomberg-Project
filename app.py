@@ -1429,18 +1429,21 @@ with left_col:
                 if price < 5:
                     continue
 
-                # Scoring: weight multiple factors
+                # Scoring: today's live signals weighted heavily so picks rotate daily
                 score = 0
-                score += min(analyst_up, 40) * 1.5          # analyst upside, capped at 40%
-                score += min(rev_growth * 100, 30)           # revenue growth
-                score += min(earn_growth * 100, 30)          # earnings growth
-                score += min(profit_m * 100, 20) * 0.5       # profit margin quality
-                score += (vol_ratio - 1) * 5 if vol_ratio > 1 else 0  # unusual volume
-                # Slight momentum bias — stocks that already moved a little today (but not too much)
-                if 0.3 < pct_today < 5:
-                    score += pct_today * 2
+                # --- TODAY signals (change daily) ---
+                score += (vol_ratio - 1) * 18 if vol_ratio > 1.2 else 0   # unusual volume spike
+                if 0.5 < pct_today < 8:
+                    score += pct_today * 6                                  # positive momentum today
+                elif pct_today < -1:
+                    score -= abs(pct_today) * 3                             # punish big down days
+                # --- Fundamentals (quality floor, lower weight) ---
+                score += min(analyst_up, 30) * 0.8
+                score += min(rev_growth * 100, 20) * 0.6
+                score += min(earn_growth * 100, 20) * 0.6
+                score += min(profit_m * 100, 15) * 0.3
                 if w52_range_pct > 70:
-                    score += 5  # near 52-week high = strong trend
+                    score += 4
 
                 # Build insight bullets
                 bullets = []
@@ -1503,14 +1506,29 @@ with left_col:
                 continue
 
         candidates.sort(key=lambda x: -x["score"])
-        # Diversify: pick from different sectors
+
+        # Exclude stocks picked in the last 2 days so picks rotate
+        history = load_picks_history()
+        cutoff   = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+        recent   = {e["sym"] for e in history if e["date"] >= cutoff}
+
         seen_sectors, picks = set(), []
+        # First pass: prefer fresh picks from different sectors
         for c in candidates:
             if len(picks) >= 3:
                 break
+            if c["sym"] in recent:
+                continue
             if c["sector"] not in seen_sectors or len(picks) == 2:
                 picks.append(c)
                 seen_sectors.add(c["sector"])
+        # Fallback: if not enough fresh picks, allow recent ones
+        if len(picks) < 3:
+            for c in candidates:
+                if len(picks) >= 3:
+                    break
+                if c not in picks:
+                    picks.append(c)
         return picks
 
     picks = get_claude_picks()

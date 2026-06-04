@@ -57,9 +57,33 @@ st.markdown("""
   div[data-testid="stRadio"] label,
   div[data-testid="stSlider"] label { color: #333; font-size: 12px; }
 
+  /* Selectbox dropdown text */
+  div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    background-color: #f0f0f0 !important;
+    color: #111111 !important;
+    border: 1px solid #ccc !important;
+  }
+  div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+    color: #111111 !important;
+  }
+  div[data-testid="stSelectbox"] svg { fill: #111111 !important; }
+
   /* Sidebar background */
   section[data-testid="stSidebar"] { background-color: #f5f5f5; }
   section[data-testid="stSidebar"] * { color: #111; }
+
+  /* Dataframe / table text */
+  div[data-testid="stDataFrame"] * { color: #111111 !important; }
+  div[data-testid="stDataFrame"] th { background-color: #f0f0f0 !important; color: #111 !important; }
+  div[data-testid="stDataFrame"] td { background-color: #ffffff !important; color: #111 !important; }
+
+  /* Tabs */
+  div[data-testid="stTabs"] button { color: #111111 !important; }
+  div[data-testid="stTabs"] button[aria-selected="true"] { color: #1565c0 !important; border-bottom-color: #1565c0 !important; }
+
+  /* Expander */
+  div[data-testid="stExpander"] summary { color: #111111 !important; }
+  div[data-testid="stExpander"] p { color: #111111 !important; }
 </style>
 """, unsafe_allow_html=True)
 
