@@ -851,51 +851,51 @@ YIELD_CURVE_TICKERS = [("3M","^IRX"),("5Y","^FVX"),("10Y","^TNX"),("30Y","^TYX")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_macro_data():
-    """Key macro indicators from FRED public CSV endpoint (no API key required)."""
-    hdrs = {"User-Agent": "Mozilla/5.0"}
-    def fetch_fred(series_id):
-        try:
-            r = requests.get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}", headers=hdrs, timeout=10)
-            if not r.ok:
-                return None, None
-            for line in reversed(r.text.strip().split("\n")[1:]):
-                parts = line.split(",")
-                if len(parts) == 2 and parts[1].strip() not in (".", ""):
-                    return float(parts[1].strip()), parts[0].strip()
-        except Exception:
-            pass
-        return None, None
-
+    """Key macro indicators: BLS (CPI + unemployment) + yfinance (rates)."""
     results = {}
-    val, date = fetch_fred("FEDFUNDS")
-    if val is not None:
-        results["Fed Funds"] = (val, "%", date)
-    val, date = fetch_fred("UNRATE")
-    if val is not None:
-        results["Unemployment"] = (val, "%", date)
-    val, date = fetch_fred("A191RL1Q225SBEA")
-    if val is not None:
-        results["GDP Growth"] = (val, "%", date)
+    hdrs = {"User-Agent": "Mozilla/5.0"}
+
+    # BLS public API — no key required
     try:
-        r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL", headers=hdrs, timeout=10)
+        payload = {
+            "seriesid": ["LNS14000000", "CUUR0000SA0"],
+            "startyear": str(datetime.now().year - 1),
+            "endyear":   str(datetime.now().year),
+        }
+        r = requests.post("https://api.bls.gov/publicAPI/v1/timeseries/data/",
+                          json=payload, headers=hdrs, timeout=12)
         if r.ok:
-            valid = []
-            for line in reversed(r.text.strip().split("\n")[1:]):
-                parts = line.split(",")
-                if len(parts) == 2 and parts[1].strip() not in (".", ""):
-                    valid.append((parts[0].strip(), float(parts[1].strip())))
-                if len(valid) >= 13:
-                    break
-            if len(valid) >= 13:
-                yoy = (valid[0][1] - valid[12][1]) / valid[12][1] * 100
-                results["CPI (YoY)"] = (round(yoy, 2), "%", valid[0][0])
+            for series in r.json().get("Results", {}).get("series", []):
+                sid   = series["seriesID"]
+                items = series.get("data", [])
+                if not items:
+                    continue
+                latest = items[0]
+                val    = float(latest["value"])
+                period = f"{latest['periodName']} {latest['year']}"
+                if sid == "LNS14000000":
+                    results["Unemployment"] = (val, "%", period)
+                elif sid == "CUUR0000SA0" and len(items) >= 13:
+                    yoy = (float(items[0]["value"]) - float(items[12]["value"])) / float(items[12]["value"]) * 100
+                    results["CPI (YoY)"] = (round(yoy, 2), "%", period)
     except Exception:
         pass
+
+    # Rates via yfinance fast_info (always available)
+    for label, sym in [("3M T-Bill", "^IRX"), ("10Y Yield", "^TNX")]:
+        try:
+            fi  = yf.Ticker(sym).fast_info
+            val = getattr(fi, "last_price", None)
+            if val:
+                results[label] = (round(float(val), 3), "%", "Live")
+        except Exception:
+            pass
+
     return results
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_earnings_calendar():
-    """Upcoming earnings dates for major tickers within the next 30 days."""
+    """Upcoming earnings dates for major tickers within the next 60 days."""
     tickers = [
         "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","JPM","V","MA",
         "AMD","NFLX","COST","LLY","UNH","GS","AVGO","CRM","NOW","PLTR",
@@ -903,7 +903,7 @@ def get_earnings_calendar():
     ]
     upcoming = []
     today  = datetime.now().date()
-    cutoff = today + timedelta(days=30)
+    cutoff = today + timedelta(days=60)
     for sym in tickers:
         try:
             cal = yf.Ticker(sym).calendar
@@ -1925,7 +1925,7 @@ with right_col:
 
     # ── Earnings Calendar ──────────────────────────────────────────────────────
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">Upcoming Earnings (30 Days)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Upcoming Earnings (60 Days)</div>', unsafe_allow_html=True)
     upcoming_earnings = get_earnings_calendar()
     if upcoming_earnings:
         from collections import defaultdict
