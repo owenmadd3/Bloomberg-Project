@@ -849,6 +849,79 @@ def get_fear_greed():
 
 YIELD_CURVE_TICKERS = [("3M","^IRX"),("5Y","^FVX"),("10Y","^TNX"),("30Y","^TYX")]
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_macro_data():
+    """Key macro indicators from FRED public CSV endpoint (no API key required)."""
+    hdrs = {"User-Agent": "Mozilla/5.0"}
+    def fetch_fred(series_id):
+        try:
+            r = requests.get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}", headers=hdrs, timeout=10)
+            if not r.ok:
+                return None, None
+            for line in reversed(r.text.strip().split("\n")[1:]):
+                parts = line.split(",")
+                if len(parts) == 2 and parts[1].strip() not in (".", ""):
+                    return float(parts[1].strip()), parts[0].strip()
+        except Exception:
+            pass
+        return None, None
+
+    results = {}
+    val, date = fetch_fred("FEDFUNDS")
+    if val is not None:
+        results["Fed Funds"] = (val, "%", date)
+    val, date = fetch_fred("UNRATE")
+    if val is not None:
+        results["Unemployment"] = (val, "%", date)
+    val, date = fetch_fred("A191RL1Q225SBEA")
+    if val is not None:
+        results["GDP Growth"] = (val, "%", date)
+    try:
+        r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL", headers=hdrs, timeout=10)
+        if r.ok:
+            valid = []
+            for line in reversed(r.text.strip().split("\n")[1:]):
+                parts = line.split(",")
+                if len(parts) == 2 and parts[1].strip() not in (".", ""):
+                    valid.append((parts[0].strip(), float(parts[1].strip())))
+                if len(valid) >= 13:
+                    break
+            if len(valid) >= 13:
+                yoy = (valid[0][1] - valid[12][1]) / valid[12][1] * 100
+                results["CPI (YoY)"] = (round(yoy, 2), "%", valid[0][0])
+    except Exception:
+        pass
+    return results
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_earnings_calendar():
+    """Upcoming earnings dates for major tickers within the next 30 days."""
+    tickers = [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","JPM","V","MA",
+        "AMD","NFLX","COST","LLY","UNH","GS","AVGO","CRM","NOW","PLTR",
+        "BAC","XOM","ABBV","WMT","DIS","UBER","COIN","HOOD","ARM","SNOW",
+    ]
+    upcoming = []
+    today  = datetime.now().date()
+    cutoff = today + timedelta(days=30)
+    for sym in tickers:
+        try:
+            cal = yf.Ticker(sym).calendar
+            nd = None
+            if isinstance(cal, dict):
+                nd = cal.get("Earnings Date")
+                if isinstance(nd, list): nd = nd[0] if nd else None
+            elif isinstance(cal, pd.DataFrame) and "Earnings Date" in cal.columns:
+                nd = cal["Earnings Date"].iloc[0]
+            if nd:
+                nd_dt = pd.to_datetime(nd).date()
+                if today <= nd_dt <= cutoff:
+                    upcoming.append((nd_dt, sym))
+        except Exception:
+            pass
+    upcoming.sort()
+    return upcoming
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_yield_curve():
     points = []
@@ -1818,6 +1891,66 @@ with right_col:
         status_color = "#f97316" if is_inverted else "#22c55e"
         st.markdown(f"<p style='color:{status_color};font-size:11px;margin-top:-8px;'>{status}</p>", unsafe_allow_html=True)
 
+    # ── Macro Indicators ───────────────────────────────────────────────────────
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Macro Indicators</div>', unsafe_allow_html=True)
+    macro_data = get_macro_data()
+    if macro_data:
+        macro_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+        for m_label, (m_val, m_suffix, m_date) in macro_data.items():
+            if m_label == "CPI (YoY)":
+                m_color = "#dc2626" if m_val > 3.5 else "#f97316" if m_val > 2.5 else "#16a34a"
+            elif m_label == "Unemployment":
+                m_color = "#dc2626" if m_val > 6 else "#f97316" if m_val > 4.5 else "#16a34a"
+            elif m_label == "GDP Growth":
+                m_color = "#16a34a" if m_val >= 2 else "#f97316" if m_val >= 0 else "#dc2626"
+            else:
+                m_color = "#2563eb"
+            try:
+                m_date_fmt = pd.to_datetime(m_date).strftime("%b %Y")
+            except Exception:
+                m_date_fmt = m_date
+            macro_html += (
+                f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px 14px;">'
+                f'<div style="color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:4px;">{m_label}</div>'
+                f'<div style="color:{m_color};font-size:20px;font-weight:700;">{m_val:,.2f}{m_suffix}</div>'
+                f'<div style="color:#94a3b8;font-size:10px;margin-top:2px;">{m_date_fmt}</div>'
+                f'</div>'
+            )
+        macro_html += '</div>'
+        st.markdown(macro_html, unsafe_allow_html=True)
+        st.markdown("<p style='color:#94a3b8;font-size:10px;margin-top:4px;'>Source: FRED (Federal Reserve Bank of St. Louis)</p>", unsafe_allow_html=True)
+    else:
+        st.markdown("<p style='color:#94a3b8;font-size:12px;'>Macro data unavailable.</p>", unsafe_allow_html=True)
+
+    # ── Earnings Calendar ──────────────────────────────────────────────────────
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Upcoming Earnings (30 Days)</div>', unsafe_allow_html=True)
+    upcoming_earnings = get_earnings_calendar()
+    if upcoming_earnings:
+        from collections import defaultdict
+        by_date = defaultdict(list)
+        for _ed, _es in upcoming_earnings:
+            by_date[_ed].append(_es)
+        earn_html = ""
+        for _edt in sorted(by_date):
+            _date_str = _edt.strftime("%a %b %d")
+            _syms_str = "  ".join(
+                f'<span style="background:#eff6ff;color:#2563eb;font-size:11px;font-weight:600;'
+                f'padding:2px 8px;border-radius:10px;">{s}</span>'
+                for s in by_date[_edt]
+            )
+            earn_html += (
+                f'<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9;">'
+                f'<div style="width:76px;color:#94a3b8;font-size:11px;flex-shrink:0;">{_date_str}</div>'
+                f'<div style="display:flex;flex-wrap:wrap;gap:4px;">{_syms_str}</div>'
+                f'</div>'
+            )
+        st.markdown(earn_html, unsafe_allow_html=True)
+        st.markdown("<p style='color:#94a3b8;font-size:10px;margin-top:4px;'>Tracking 30 major tickers. Click any name in Company Profile to see full earnings history.</p>", unsafe_allow_html=True)
+    else:
+        st.markdown("<p style='color:#94a3b8;font-size:12px;'>No major earnings scheduled in the next 30 days.</p>", unsafe_allow_html=True)
+
     # ── Claude Picks Tracker ───────────────────────────────────────────────────
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
     st.markdown('<div class="section-header">Claude Picks Tracker</div>', unsafe_allow_html=True)
@@ -2009,6 +2142,20 @@ def fetch_insider(ticker):
     if hit: return val
     result = _yf_with_retry(lambda: yf.Ticker(ticker).insider_transactions)
     _cache_set(f"insider:{ticker}", result)
+    return result
+
+def fetch_options(ticker):
+    hit, val = _cache_get(f"opts:{ticker}", ttl=300)
+    if hit: return val
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).options)
+    _cache_set(f"opts:{ticker}", result)
+    return result
+
+def fetch_option_chain(ticker, exp):
+    hit, val = _cache_get(f"chain:{ticker}:{exp}", ttl=300)
+    if hit: return val
+    result = _yf_with_retry(lambda: yf.Ticker(ticker).option_chain(exp))
+    _cache_set(f"chain:{ticker}:{exp}", result)
     return result
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2459,6 +2606,90 @@ def show_profile(ticker):
                         st.markdown("<p style='color:#64748b;font-size:12px;'>No recent insider transactions.</p>", unsafe_allow_html=True)
                 except Exception:
                     st.markdown("<p style='color:#64748b;font-size:12px;'>Insider data unavailable.</p>", unsafe_allow_html=True)
+
+            if not is_crypto:
+                # Options Overview
+                st.markdown('<div class="section-header">Options Overview</div>', unsafe_allow_html=True)
+                try:
+                    exps = fetch_options(ticker)
+                    if exps:
+                        sel_exp = st.selectbox("Expiry", exps[:12], label_visibility="collapsed", key="opt_exp_sel")
+                        chain   = fetch_option_chain(ticker, sel_exp)
+                        calls   = chain.calls
+                        puts    = chain.puts
+
+                        avg_call_iv = calls["impliedVolatility"].replace(0, float("nan")).mean() if not calls.empty else None
+                        avg_put_iv  = puts["impliedVolatility"].replace(0, float("nan")).mean()  if not puts.empty else None
+                        call_vol    = calls["volume"].fillna(0).sum()
+                        put_vol     = puts["volume"].fillna(0).sum()
+                        pc_ratio    = put_vol / call_vol if call_vol > 0 else None
+                        total_vol   = int(call_vol + put_vol)
+
+                        oc1, oc2, oc3, oc4 = st.columns(4)
+                        with oc1:
+                            metric_card("Call IV (avg)", f"{avg_call_iv*100:.1f}%" if avg_call_iv and not pd.isna(avg_call_iv) else "N/A")
+                        with oc2:
+                            metric_card("Put IV (avg)", f"{avg_put_iv*100:.1f}%" if avg_put_iv and not pd.isna(avg_put_iv) else "N/A")
+                        with oc3:
+                            pc_css = "negative" if pc_ratio and pc_ratio > 1 else "positive"
+                            metric_card("Put/Call Ratio", f"{pc_ratio:.2f}" if pc_ratio else "N/A", pc_css)
+                        with oc4:
+                            metric_card("Total Volume", f"{total_vol:,}" if total_vol else "N/A")
+
+                        curr_p = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+                        if curr_p > 0 and not calls.empty and not puts.empty:
+                            def _get_atm(df, n=6):
+                                d = df.copy()
+                                d["_dist"] = (d["strike"] - curr_p).abs()
+                                return d.nsmallest(n, "_dist").sort_values("strike")
+
+                            atm_calls = _get_atm(calls)
+                            atm_puts  = _get_atm(puts)
+
+                            def _render_opt_table(df, is_call):
+                                if df.empty:
+                                    st.markdown("<p style='color:#64748b;'>No data.</p>", unsafe_allow_html=True)
+                                    return
+                                clr = "#16a34a" if is_call else "#dc2626"
+                                rows_html = ""
+                                for _, row in df.iterrows():
+                                    strike = row.get("strike", 0) or 0
+                                    last   = row.get("lastPrice", 0) or 0
+                                    bid    = row.get("bid", 0) or 0
+                                    ask    = row.get("ask", 0) or 0
+                                    vol    = row.get("volume", 0) or 0
+                                    iv     = row.get("impliedVolatility", 0) or 0
+                                    oi     = row.get("openInterest", 0) or 0
+                                    atm_bg = "background:#eff6ff;" if abs(strike - curr_p) < curr_p * 0.012 else ""
+                                    rows_html += (
+                                        f'<tr style="{atm_bg}border-bottom:1px solid #e2e8f0;">'
+                                        f'<td style="padding:7px 10px;color:{clr};font-weight:700;font-size:12px;">${strike:,.2f}</td>'
+                                        f'<td style="padding:7px 10px;color:#1e3a5c;font-size:12px;">${last:,.2f}</td>'
+                                        f'<td style="padding:7px 10px;color:#64748b;font-size:12px;">${bid:,.2f} / ${ask:,.2f}</td>'
+                                        f'<td style="padding:7px 10px;color:#475569;font-size:12px;text-align:right;">{int(vol):,}</td>'
+                                        f'<td style="padding:7px 10px;color:#2563eb;font-size:12px;font-weight:600;">{iv*100:.1f}%</td>'
+                                        f'<td style="padding:7px 10px;color:#64748b;font-size:12px;text-align:right;">{int(oi):,}</td>'
+                                        f'</tr>'
+                                    )
+                                hdrs = "".join(
+                                    f'<th style="padding:8px 10px;color:#94a3b8;text-align:left;font-size:10px;'
+                                    f'text-transform:uppercase;background:#f1f5f9;border-bottom:1px solid #e2e8f0;">{c}</th>'
+                                    for c in ["Strike", "Last", "Bid / Ask", "Volume", "IV", "Open Int"]
+                                )
+                                st.markdown(
+                                    f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #e2e8f0;">'
+                                    f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+                                    f'<thead><tr>{hdrs}</tr></thead><tbody>{rows_html}</tbody></table></div>',
+                                    unsafe_allow_html=True,
+                                )
+
+                            ot1, ot2 = st.tabs([f"Calls (ATM ±6)", f"Puts (ATM ±6)"])
+                            with ot1: _render_opt_table(atm_calls, True)
+                            with ot2: _render_opt_table(atm_puts, False)
+                    else:
+                        st.markdown("<p style='color:#64748b;font-size:12px;'>No options listed for this ticker.</p>", unsafe_allow_html=True)
+                except Exception as _oe:
+                    st.markdown(f"<p style='color:#64748b;font-size:12px;'>Options unavailable: {_oe}</p>", unsafe_allow_html=True)
 
             # Company news
             st.markdown('<div class="section-header">Company News</div>', unsafe_allow_html=True)

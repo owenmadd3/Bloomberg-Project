@@ -45,7 +45,8 @@
       "Bash(git push *)",
       "Bash(pkill -f \"finance_tools.py\")",
       "Bash(pkill -f \"streamlit run app.py\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/finance_tools.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/finance_tools.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python3 -c \"import ast, sys; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/app.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
     ]
   }
 }
