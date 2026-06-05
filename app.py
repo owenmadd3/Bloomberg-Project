@@ -862,7 +862,7 @@ def get_yield_curve():
             pass
     return points
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_market_news():
     seen, articles = set(), []
     for sym in ["SPY","AAPL","MSFT","NVDA","JPM"]:
@@ -890,6 +890,9 @@ def get_market_news():
                 articles.append({"title":title,"url":url,"source":source,"time":dt_str})
         except Exception:
             pass
+    # Don't cache an empty result — let it retry on the next load
+    if not articles:
+        raise Exception("No news returned — skip caching")
     return articles[:18]
 
 # ── Claude Picks ──────────────────────────────────────────────────────────────
@@ -1698,7 +1701,10 @@ with left_col:
 with right_col:
     # ── Market Headlines ───────────────────────────────────────────────────────
     st.markdown('<div class="section-header">Market Headlines</div>', unsafe_allow_html=True)
-    headlines = get_market_news()
+    try:
+        headlines = get_market_news()
+    except Exception:
+        headlines = []
     if headlines:
         for h in headlines:
             if h["url"]:
