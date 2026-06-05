@@ -1545,8 +1545,8 @@ if dcf_ticker:
                         xaxis=dict(showgrid=False, tickfont=dict(size=11, color="#64748b")),
                         yaxis=dict(showgrid=True, gridcolor="#e2e8f0",
                                    tickfont=dict(size=11, color="#64748b"),
-                                   ticksuffix="B", title="USD Billions",
-                                   titlefont=dict(size=11, color="#94a3b8")),
+                                   ticksuffix="B",
+                                   title=dict(text="USD Billions", font=dict(size=11, color="#94a3b8"))),
                         legend=dict(bgcolor="#ffffff", font=dict(size=11, color="#475569"),
                                     orientation="h", x=0, y=1.12),
                     )
