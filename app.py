@@ -877,6 +877,141 @@ def get_market_news():
             pass
     return articles[:18]
 
+# ── Claude Picks ──────────────────────────────────────────────────────────────
+CLAUDE_PICKS_POOL = [
+    "NVDA","MSFT","AAPL","META","GOOGL","AMZN","TSLA","AMD","CRM","NOW",
+    "AVGO","NFLX","UBER","PLTR","JPM","GS","V","MA","COST","LLY",
+    "UNH","ABBV","XOM","CVX","CRWD",
+]
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_claude_picks():
+    candidates = []
+    for sym in CLAUDE_PICKS_POOL:
+        try:
+            t    = yf.Ticker(sym)
+            fi   = t.fast_info
+            price = getattr(fi, "last_price", None) or 0
+            prev  = getattr(fi, "previous_close", None) or price
+            if not price or price < 5:
+                continue
+            pct_today = (price - prev) / prev * 100 if prev else 0
+            volume    = getattr(fi, "three_month_average_volume", None)  # fast_info has this
+            avg_vol   = getattr(fi, "three_month_average_volume", None) or 1
+            # Use regular volume vs avg from fast_info
+            day_vol   = getattr(fi, "last_volume", None) or 0
+            vol_ratio = day_vol / avg_vol if avg_vol else 1
+            w52_high  = getattr(fi, "year_high", None) or 0
+            w52_low   = getattr(fi, "year_low",  None) or 0
+            w52_range_pct = ((price - w52_low) / (w52_high - w52_low) * 100) if w52_high > w52_low else 50
+
+            # Pull full info only for fundamentals (one call per stock, cached)
+            info        = t.info
+            fwd_pe      = info.get("forwardPE")
+            trailing_pe = info.get("trailingPE")
+            rev_growth  = info.get("revenueGrowth") or 0
+            earn_growth = info.get("earningsGrowth") or 0
+            profit_m    = info.get("profitMargins") or 0
+            mean_target = info.get("targetMeanPrice") or 0
+            analyst_up  = ((mean_target - price) / price * 100) if price and mean_target else 0
+            market_cap  = info.get("marketCap") or 0
+            name        = info.get("shortName") or sym
+            sector      = info.get("sector", "")
+
+            # Scoring — today's signals dominate so picks rotate daily
+            score = 0
+            score += (vol_ratio - 1) * 18 if vol_ratio > 1.2 else 0
+            if 0.5 < pct_today < 8:
+                score += pct_today * 6
+            elif pct_today < -1:
+                score -= abs(pct_today) * 3
+            score += min(analyst_up, 30) * 0.8
+            score += min(rev_growth * 100, 20) * 0.6
+            score += min(earn_growth * 100, 20) * 0.6
+            score += min(profit_m * 100, 15) * 0.3
+            if w52_range_pct > 70:
+                score += 4
+
+            # Insight bullets
+            bullets = []
+            if analyst_up > 8:
+                bullets.append(f"Analyst consensus: <b>${mean_target:.0f}</b> mean target — <b>+{analyst_up:.1f}%</b> upside from current price")
+            if rev_growth > 0.10:
+                bullets.append(f"Revenue growing <b>+{rev_growth*100:.0f}%</b> YoY — top-line momentum intact")
+            if earn_growth > 0.10:
+                bullets.append(f"Earnings growth of <b>+{earn_growth*100:.0f}%</b> YoY signals expanding profitability")
+            if profit_m > 0.20:
+                bullets.append(f"Strong net margin of <b>{profit_m*100:.1f}%</b> — high-quality earnings")
+            if vol_ratio > 1.4:
+                bullets.append(f"Trading at <b>{vol_ratio:.1f}×</b> average volume today — elevated institutional interest")
+            if w52_range_pct > 75:
+                bullets.append(f"Near <b>52-week high</b> ({w52_range_pct:.0f}th percentile of range) — strong uptrend")
+            if fwd_pe and trailing_pe and fwd_pe < trailing_pe * 0.85:
+                bullets.append(f"Forward P/E of <b>{fwd_pe:.1f}x</b> vs trailing <b>{trailing_pe:.1f}x</b> — earnings acceleration priced in")
+            if not bullets:
+                bullets.append(f"Quality franchise with market cap of <b>{fmt_large(market_cap)}</b> and consistent free cash flow generation")
+
+            # Latest news headline
+            news_headline, news_url, news_source, news_time = "", "", "", ""
+            try:
+                for a in (t.news or [])[:5]:
+                    content = a.get("content", {})
+                    title   = content.get("title") or a.get("title", "")
+                    if not title:
+                        continue
+                    url = ""
+                    cp = content.get("canonicalUrl", {})
+                    if isinstance(cp, dict): url = cp.get("url", "")
+                    if not url:
+                        ct = content.get("clickThroughUrl", {})
+                        url = ct.get("url", "") if isinstance(ct, dict) else ""
+                    if not url: url = a.get("link", "")
+                    pub = content.get("pubDate") or a.get("providerPublishTime")
+                    try:
+                        dt_str = datetime.fromtimestamp(pub).strftime("%b %d") if isinstance(pub, (int, float)) else pd.to_datetime(pub).strftime("%b %d")
+                    except Exception:
+                        dt_str = ""
+                    provider = content.get("provider", {})
+                    source   = provider.get("displayName", "") if isinstance(provider, dict) else a.get("publisher", "")
+                    news_headline, news_url, news_source, news_time = title, url, source, dt_str
+                    break
+            except Exception:
+                pass
+
+            candidates.append({
+                "sym": sym, "name": name, "price": price, "pct_today": pct_today,
+                "analyst_up": analyst_up, "mean_target": mean_target,
+                "rev_growth": rev_growth, "earn_growth": earn_growth,
+                "score": score, "bullets": bullets[:3],
+                "sector": sector, "fwd_pe": fwd_pe,
+                "news_headline": news_headline, "news_url": news_url,
+                "news_source": news_source, "news_time": news_time,
+                "vol_ratio": vol_ratio,
+            })
+        except Exception:
+            continue
+
+    candidates.sort(key=lambda x: -x["score"])
+
+    # Exclude stocks picked in the last 2 days so picks rotate
+    history  = load_picks_history()
+    cutoff   = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    recent   = {e["sym"] for e in history if e["date"] >= cutoff}
+
+    seen_sectors, picks = set(), []
+    for c in candidates:
+        if len(picks) >= 3: break
+        if c["sym"] in recent: continue
+        if c["sector"] not in seen_sectors or len(picks) == 2:
+            picks.append(c)
+            seen_sectors.add(c["sector"])
+    if len(picks) < 3:
+        for c in candidates:
+            if len(picks) >= 3: break
+            if c not in picks:
+                picks.append(c)
+    return picks
+
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -1430,146 +1565,6 @@ with left_col:
     # ── Claude Picks ───────────────────────────────────────────────────────────
     st.markdown('<div style="margin-top:-18px;"><div class="section-header">Claude Picks — Market Close Outlook</div></div>', unsafe_allow_html=True)
     st.markdown("<p style='color:#64748b; font-size:12px; margin:-8px 0 14px;'>Stocks with strong fundamentals and potential catalysts for tomorrow's session.</p>", unsafe_allow_html=True)
-
-    CLAUDE_PICKS_POOL = [
-        "NVDA","MSFT","AAPL","META","GOOGL","AMZN","TSLA","AMD","CRM","NOW",
-        "AVGO","ORCL","NFLX","UBER","PLTR","ARM","SNOW","CRWD","MELI","SHOP",
-        "JPM","GS","V","MA","BAC","COST","WMT","HD","LLY","UNH",
-        "ABBV","MRK","PFE","XOM","CVX","NEE","ENPH","FSLR",
-    ]
-
-    @st.cache_data(ttl=900, show_spinner=False)
-    def get_claude_picks():
-        candidates = []
-        for sym in CLAUDE_PICKS_POOL:
-            try:
-                t = yf.Ticker(sym)
-                info = t.info
-                price       = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-                prev        = info.get("previousClose") or info.get("regularMarketPreviousClose") or price
-                pct_today   = (price - prev) / prev * 100 if prev else 0
-                fwd_pe      = info.get("forwardPE")
-                trailing_pe = info.get("trailingPE")
-                rev_growth  = info.get("revenueGrowth") or 0          # decimal
-                earn_growth = info.get("earningsGrowth") or 0         # decimal
-                profit_m    = info.get("profitMargins") or 0
-                mean_target = info.get("targetMeanPrice") or 0
-                analyst_up  = ((mean_target - price) / price * 100) if price and mean_target else 0
-                volume      = info.get("volume") or 0
-                avg_vol     = info.get("averageVolume") or 1
-                vol_ratio   = volume / avg_vol
-                name        = info.get("shortName") or sym
-                sector      = info.get("sector", "")
-                w52_high    = info.get("fiftyTwoWeekHigh") or 0
-                w52_low     = info.get("fiftyTwoWeekLow") or 0
-                w52_range_pct = ((price - w52_low) / (w52_high - w52_low) * 100) if w52_high > w52_low else 50
-                fcf         = info.get("freeCashflow") or 0
-                market_cap  = info.get("marketCap") or 0
-
-                if price < 5:
-                    continue
-
-                # Scoring: today's live signals weighted heavily so picks rotate daily
-                score = 0
-                # --- TODAY signals (change daily) ---
-                score += (vol_ratio - 1) * 18 if vol_ratio > 1.2 else 0   # unusual volume spike
-                if 0.5 < pct_today < 8:
-                    score += pct_today * 6                                  # positive momentum today
-                elif pct_today < -1:
-                    score -= abs(pct_today) * 3                             # punish big down days
-                # --- Fundamentals (quality floor, lower weight) ---
-                score += min(analyst_up, 30) * 0.8
-                score += min(rev_growth * 100, 20) * 0.6
-                score += min(earn_growth * 100, 20) * 0.6
-                score += min(profit_m * 100, 15) * 0.3
-                if w52_range_pct > 70:
-                    score += 4
-
-                # Build insight bullets
-                bullets = []
-                if analyst_up > 8:
-                    bullets.append(f"Analyst consensus: <b>${mean_target:.0f}</b> mean target — <b>+{analyst_up:.1f}%</b> upside from current price")
-                if rev_growth > 0.10:
-                    bullets.append(f"Revenue growing <b>+{rev_growth*100:.0f}%</b> YoY — top-line momentum intact")
-                if earn_growth > 0.10:
-                    bullets.append(f"Earnings growth of <b>+{earn_growth*100:.0f}%</b> YoY signals expanding profitability")
-                if profit_m > 0.20:
-                    bullets.append(f"Strong net margin of <b>{profit_m*100:.1f}%</b> — high-quality earnings")
-                if vol_ratio > 1.4:
-                    bullets.append(f"Trading at <b>{vol_ratio:.1f}×</b> average volume today — elevated institutional interest")
-                if w52_range_pct > 75:
-                    bullets.append(f"Near <b>52-week high</b> ({w52_range_pct:.0f}th percentile of range) — strong uptrend")
-                if fwd_pe and trailing_pe and fwd_pe < trailing_pe * 0.85:
-                    bullets.append(f"Forward P/E of <b>{fwd_pe:.1f}x</b> vs trailing <b>{trailing_pe:.1f}x</b> — earnings acceleration priced in")
-                if not bullets:
-                    bullets.append(f"Quality franchise with market cap of <b>{fmt_large(market_cap)}</b> and consistent free cash flow generation")
-
-                # Fetch latest news headline
-                news_headline, news_url, news_source, news_time = "", "", "", ""
-                try:
-                    articles = t.news or []
-                    for a in articles[:5]:
-                        content = a.get("content", {})
-                        title = content.get("title") or a.get("title", "")
-                        if not title:
-                            continue
-                        url = ""
-                        cp = content.get("canonicalUrl", {})
-                        if isinstance(cp, dict): url = cp.get("url", "")
-                        if not url:
-                            ct = content.get("clickThroughUrl", {})
-                            url = ct.get("url", "") if isinstance(ct, dict) else ""
-                        if not url: url = a.get("link", "")
-                        pub = content.get("pubDate") or a.get("providerPublishTime")
-                        try:
-                            dt_str = datetime.fromtimestamp(pub).strftime("%b %d") if isinstance(pub, (int, float)) else pd.to_datetime(pub).strftime("%b %d")
-                        except Exception:
-                            dt_str = ""
-                        provider = content.get("provider", {})
-                        source = provider.get("displayName", "") if isinstance(provider, dict) else a.get("publisher", "")
-                        news_headline, news_url, news_source, news_time = title, url, source, dt_str
-                        break
-                except Exception:
-                    pass
-
-                candidates.append({
-                    "sym": sym, "name": name, "price": price, "pct_today": pct_today,
-                    "analyst_up": analyst_up, "mean_target": mean_target,
-                    "rev_growth": rev_growth, "earn_growth": earn_growth,
-                    "score": score, "bullets": bullets[:3],
-                    "sector": sector, "fwd_pe": fwd_pe,
-                    "news_headline": news_headline, "news_url": news_url,
-                    "news_source": news_source, "news_time": news_time,
-                    "vol_ratio": vol_ratio,
-                })
-            except Exception:
-                continue
-
-        candidates.sort(key=lambda x: -x["score"])
-
-        # Exclude stocks picked in the last 2 days so picks rotate
-        history = load_picks_history()
-        cutoff   = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
-        recent   = {e["sym"] for e in history if e["date"] >= cutoff}
-
-        seen_sectors, picks = set(), []
-        # First pass: prefer fresh picks from different sectors
-        for c in candidates:
-            if len(picks) >= 3:
-                break
-            if c["sym"] in recent:
-                continue
-            if c["sector"] not in seen_sectors or len(picks) == 2:
-                picks.append(c)
-                seen_sectors.add(c["sector"])
-        # Fallback: if not enough fresh picks, allow recent ones
-        if len(picks) < 3:
-            for c in candidates:
-                if len(picks) >= 3:
-                    break
-                if c not in picks:
-                    picks.append(c)
-        return picks
 
     picks = get_claude_picks()
 
