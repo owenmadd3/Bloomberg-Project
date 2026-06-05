@@ -69,15 +69,30 @@ def save_watchlist(wl):
     with open(WATCHLIST_FILE, "w") as f:
         json.dump(wl, f)
 
-def load_picks_history():
+@st.cache_resource
+def _picks_store():
+    """In-memory singleton that survives page refreshes for the life of the server process.
+    Seeded from the local file on first boot so localhost history is never lost."""
+    data = []
     if os.path.exists(PICKS_HISTORY_FILE):
-        with open(PICKS_HISTORY_FILE) as f:
-            return json.load(f)
-    return []
+        try:
+            with open(PICKS_HISTORY_FILE) as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    return {"history": data}
+
+def load_picks_history():
+    return list(_picks_store()["history"])
 
 def save_picks_history(history):
-    with open(PICKS_HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+    _picks_store()["history"] = list(history)
+    # Also write to disk so localhost survives a full restart
+    try:
+        with open(PICKS_HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass
 
 def record_daily_picks(picks):
     """Save today's picks once per day, but only after 6:00 PM CT.
