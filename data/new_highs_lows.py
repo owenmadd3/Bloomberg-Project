@@ -91,19 +91,6 @@ def compute_breadth(price_df: pd.DataFrame) -> pd.DataFrame:
         records.append({"date": price_df.index[i], "new_highs": nh, "new_lows": nl})
     return pd.DataFrame(records).set_index("date")
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def compute_ad_line(price_df: pd.DataFrame) -> pd.DataFrame:
-    """Daily advance/decline counts and cumulative A/D line from price data."""
-    ret       = price_df.pct_change()
-    advancing = (ret > 0).sum(axis=1)
-    declining = (ret < 0).sum(axis=1)
-    net       = advancing - declining
-    return pd.DataFrame({
-        "advancing": advancing,
-        "declining": declining,
-        "net_ad":    net,
-        "ad_line":   net.cumsum(),
-    }).dropna()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_constituents(price_df: pd.DataFrame, as_of: str):
@@ -326,14 +313,12 @@ index_sym = INDEX_TICKER[exchange]
 with st.spinner(f"Loading {exchange} data..."):
     prices  = load_price_data(tickers, fetch_start)
     breadth = compute_breadth(prices)
-    ad_data = compute_ad_line(prices)
     idx_df  = load_index(index_sym, fetch_start)
 
 idx_trim = idx_df  # no upfront trimming; buttons/pickers do all filtering
 
 breadth["hi_sm"] = breadth["new_highs"].rolling(smoothing).mean() if smoothing > 1 else breadth["new_highs"].astype(float)
 breadth["lo_sm"] = breadth["new_lows"].rolling(smoothing).mean()  if smoothing > 1 else breadth["new_lows"].astype(float)
-ad_data["ad_sm"] = ad_data["ad_line"].rolling(smoothing).mean()   if smoothing > 1 else ad_data["ad_line"].astype(float)
 
 # ── Compute stats ─────────────────────────────────────────────────────────────
 idx_close = idx_trim["Close"].squeeze().astype(float) if not idx_trim.empty else pd.Series(dtype=float)
@@ -447,26 +432,18 @@ date_to   = dc2.date_input("To",   value=qp_to,   min_value=min_d, max_value=max
 
 # ── Filter to window ──────────────────────────────────────────────────────────
 bv = breadth[(breadth.index.date >= date_from) & (breadth.index.date <= date_to)]
-av = ad_data[(ad_data.index.date >= date_from) & (ad_data.index.date <= date_to)]
 if not idx_trim.empty:
     iv   = idx_trim[(idx_trim.index.date >= date_from) & (idx_trim.index.date <= date_to)]
     icv  = iv["Close"].squeeze().astype(float)
 else:
     iv, icv = idx_trim, idx_close
 
-# A/D line stats for header
-ad_last     = int(av["ad_line"].iloc[-1])  if not av.empty else 0
-ad_last_net = int(av["net_ad"].iloc[-1])   if not av.empty else 0
-ad_adv      = int(av["advancing"].iloc[-1]) if not av.empty else 0
-ad_dec      = int(av["declining"].iloc[-1]) if not av.empty else 0
-
-# ── Build chart — 3 panels ────────────────────────────────────────────────────
+# ── Build chart ───────────────────────────────────────────────────────────────
 fig = make_subplots(
-    rows=3, cols=1,
-    row_heights=[0.48, 0.28, 0.24],
+    rows=2, cols=1,
+    row_heights=[0.60, 0.40],
     shared_xaxes=True,
     vertical_spacing=0.02,
-    subplot_titles=("", "", ""),
 )
 
 # Panel 1 — index price line
@@ -496,19 +473,6 @@ fig.add_trace(go.Scatter(
     hovertemplate="<b>New Highs</b> %{y:.0f}<extra></extra>",
 ), row=2, col=1)
 
-# Panel 3 — Advance/Decline line
-if not av.empty:
-    ad_color = "#f59e0b"
-    fig.add_trace(go.Scatter(
-        x=av.index, y=av["ad_sm"], mode="lines",
-        name=f"A/D Line  {ad_last:+,}  (Adv {ad_adv} / Dec {ad_dec})",
-        line=dict(color=ad_color, width=1.2),
-        hovertemplate="<b>A/D Line</b> %{y:,.0f}<extra></extra>",
-    ), row=3, col=1)
-    # Zero reference line
-    fig.add_hline(y=av["ad_sm"].iloc[0], line_dash="dot", line_color="#ccc",
-                  line_width=1, row=3, col=1)
-
 # ── Layout ────────────────────────────────────────────────────────────────────
 spike = dict(showspikes=True, spikecolor="#aaa", spikethickness=1, spikedash="dot", spikemode="across")
 ax_base = dict(
@@ -528,15 +492,18 @@ fig.update_layout(
         orientation="h", x=0, y=1.01, traceorder="reversed",
     ),
     margin=dict(l=55, r=55, t=40, b=10),
-    height=780,
+    height=680,
     modebar=dict(bgcolor="rgba(0,0,0,0)", color="#555", activecolor="#4fc3f7"),
 )
 
-for row in range(1, 4):
-    fig.update_yaxes(side="right", row=row, col=1, **ax_base)
-    fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8",
-                     tickfont=dict(color="#555", size=10, family="monospace"),
-                     rangeslider_visible=False, **spike, row=row, col=1)
+# Both panels — single right-side y-axis
+fig.update_yaxes(side="right", row=1, col=1, **ax_base)
+fig.update_yaxes(side="right", row=2, col=1, **ax_base)
+
+fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
+                 rangeslider_visible=False, **spike, row=1, col=1)
+fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
+                 rangeslider_visible=False, **spike, row=2, col=1)
 
 st.plotly_chart(fig, use_container_width=True, config={
     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
@@ -596,13 +563,7 @@ with tab_lo:
 
 # ── Raw data table ────────────────────────────────────────────────────────────
 with st.expander("Raw Breadth Data"):
-    combined = breadth[["new_highs","new_lows"]].join(
-        ad_data[["advancing","declining","net_ad","ad_line"]], how="left"
-    )
-    combined.columns = [
-        f"{BBG_HI[exchange]} (New Highs)",
-        f"{BBG_LO[exchange]} (New Lows)",
-        "Advancing", "Declining", "Net A/D", "A/D Line (Cumulative)",
-    ]
-    combined.index = combined.index.strftime("%m/%d/%Y")
-    st.dataframe(combined.iloc[::-1].head(120), use_container_width=True, height=320)
+    display = breadth[["new_highs","new_lows"]].copy()
+    display.columns = [f"{BBG_HI[exchange]} (New Highs)", f"{BBG_LO[exchange]} (New Lows)"]
+    display.index = display.index.strftime("%m/%d/%Y")
+    st.dataframe(display.iloc[::-1].head(120), use_container_width=True, height=320)
