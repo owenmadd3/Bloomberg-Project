@@ -1313,6 +1313,280 @@ elif company_search_btn and company_query:
     st.markdown("<p style='color:#64748b; font-size:12px; margin-top:6px;'>No matches found.</p>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# DCF / INTRINSIC VALUE CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("<div style='height:32px;'></div>", unsafe_allow_html=True)
+st.markdown('<div class="section-header">DCF Intrinsic Value Calculator</div>', unsafe_allow_html=True)
+st.markdown(
+    "<p style='color:#64748b; font-size:12px; margin:-8px 0 12px;'>"
+    "Discounted cash flow model using SEC EDGAR free cash flow data. "
+    "Adjust growth and discount assumptions to stress-test valuations.</p>",
+    unsafe_allow_html=True,
+)
+
+with st.form("dcf_ticker_form"):
+    dcf_query = st.text_input(
+        "Ticker or company name",
+        placeholder="e.g. AAPL, Microsoft, NVDA…",
+        label_visibility="collapsed",
+        key="dcf_query",
+    )
+    dcf_load_btn = st.form_submit_button("Load Company", use_container_width=True)
+
+if dcf_load_btn and dcf_query:
+    q = dcf_query.strip()
+    override = NAME_OVERRIDES.get(q.lower())
+    if override:
+        st.session_state["dcf_ticker"] = override
+    else:
+        result = resolve_company_ticker(q)
+        st.session_state["dcf_ticker"] = result[0] if result else q.upper()
+
+dcf_ticker = st.session_state.get("dcf_ticker")
+
+if dcf_ticker:
+    with st.spinner(f"Loading {dcf_ticker} fundamentals from SEC EDGAR…"):
+        try:
+            cik = get_cik(dcf_ticker)
+            if not cik:
+                st.error(f"No SEC EDGAR data found for **{dcf_ticker}**. Check the ticker symbol.")
+            else:
+                facts  = get_edgar_facts(cik)
+                cf_map = {k: v for k, v in EDGAR_CASHFLOW.items() if v}
+                df_cf  = extract_edgar_annual(facts, cf_map)
+                df_inc = extract_edgar_annual(facts, EDGAR_INCOME)
+
+                # Build FCF series from EDGAR
+                fcf_by_year = {}
+                if (not df_cf.empty
+                        and "Operating Cash Flow" in df_cf.index
+                        and "Capital Expenditures" in df_cf.index):
+                    ocf   = df_cf.loc["Operating Cash Flow"].dropna()
+                    capex = df_cf.loc["Capital Expenditures"].dropna().abs()
+                    for y in sorted(set(ocf.index) & set(capex.index), reverse=True):
+                        fcf_by_year[y] = float(ocf[y]) - float(capex[y])
+
+                if not fcf_by_year:
+                    st.warning(f"Free cash flow data not available for **{dcf_ticker}** on EDGAR. "
+                               "The company may not file 10-Ks or may have incomplete cash flow data.")
+                else:
+                    recent_years = sorted(fcf_by_year, reverse=True)[:3]
+                    base_fcf_avg = sum(fcf_by_year[y] for y in recent_years) / len(recent_years)
+                    latest_fcf   = fcf_by_year[recent_years[0]]
+                    latest_year  = recent_years[0]
+
+                    # Shares outstanding
+                    shares = None
+                    if not df_inc.empty and "Shares Outstanding" in df_inc.index:
+                        sr = df_inc.loc["Shares Outstanding"].dropna()
+                        if not sr.empty:
+                            shares = float(sr[max(sr.index)])
+
+                    # Current price
+                    price_data    = fetch_price_data(dcf_ticker)
+                    current_price = price_data.get("currentPrice")
+
+                    companies = get_company_list()
+                    dcf_name  = next((n for s, n in companies if s == dcf_ticker), dcf_ticker)
+
+                    # ── Company summary bar ────────────────────────────────────
+                    summary_items = [
+                        f'<span style="color:#94a3b8;font-size:12px;">Current Price &nbsp;<b style="color:#1e3a5c;">${current_price:,.2f}</b></span>'
+                        if current_price else "",
+                        f'<span style="color:#94a3b8;font-size:12px;">Latest FCF ({latest_year}) &nbsp;<b style="color:#1e3a5c;">{fmt_large(latest_fcf)}</b></span>',
+                        f'<span style="color:#94a3b8;font-size:12px;">3-Year Avg FCF &nbsp;<b style="color:#1e3a5c;">{fmt_large(base_fcf_avg)}</b></span>',
+                        f'<span style="color:#94a3b8;font-size:12px;">Shares Out &nbsp;<b style="color:#1e3a5c;">{fmt_large(shares)}</b></span>'
+                        if shares else "",
+                    ]
+                    st.markdown(
+                        f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+                        f'padding:16px 22px;margin-bottom:20px;">'
+                        f'<div style="color:#1e3a5c;font-size:18px;font-weight:700;margin-bottom:8px;">'
+                        f'{dcf_name} &nbsp;<span style="color:#94a3b8;font-size:14px;font-weight:400;">({dcf_ticker})</span></div>'
+                        f'<div style="display:flex;gap:24px;flex-wrap:wrap;">'
+                        + "".join(summary_items) +
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # ── Assumption sliders ─────────────────────────────────────
+                    st.markdown(
+                        "<p style='color:#94a3b8;font-size:10px;font-weight:600;text-transform:uppercase;"
+                        "letter-spacing:.12em;margin-bottom:10px;'>Model Assumptions</p>",
+                        unsafe_allow_html=True,
+                    )
+                    sl1, sl2 = st.columns(2)
+                    with sl1:
+                        growth_1   = st.slider("Stage 1 growth — years 1–5",  -10, 50, 10, step=1, format="%d%%", key="dcf_g1",
+                                               help="Annual FCF growth rate for the first 5 years.")
+                        terminal_g = st.slider("Terminal growth rate",           0,  5,  2, step=1, format="%d%%", key="dcf_tg",
+                                               help="Perpetual growth beyond year 10. Usually close to long-run GDP (~2–3%).")
+                    with sl2:
+                        growth_2 = st.slider("Stage 2 growth — years 6–10", -10, 30,  5, step=1, format="%d%%", key="dcf_g2",
+                                             help="Annual FCF growth rate for years 6–10 (fade period).")
+                        wacc     = st.slider("Discount rate (WACC)",           5, 20, 10, step=1, format="%d%%", key="dcf_wacc",
+                                             help="Required rate of return. Higher = more conservative. 8–12% is typical for equities.")
+
+                    base_label = st.radio(
+                        "Starting FCF",
+                        [f"3-Year Average  ({fmt_large(base_fcf_avg)})", f"Latest year {latest_year}  ({fmt_large(latest_fcf)})"],
+                        horizontal=True,
+                        label_visibility="collapsed",
+                        key="dcf_base",
+                    )
+                    starting_fcf = base_fcf_avg if "Average" in base_label else latest_fcf
+
+                    # ── DCF model ──────────────────────────────────────────────
+                    g1 = growth_1   / 100
+                    g2 = growth_2   / 100
+                    tg = terminal_g / 100
+                    r  = wacc       / 100
+
+                    proj_fcfs, pv_fcfs = [], []
+                    fcf_t = starting_fcf
+                    for t in range(1, 11):
+                        fcf_t = fcf_t * (1 + (g1 if t <= 5 else g2))
+                        proj_fcfs.append(fcf_t)
+                        pv_fcfs.append(fcf_t / (1 + r) ** t)
+
+                    if r > tg:
+                        tv_pv = (proj_fcfs[-1] * (1 + tg) / (r - tg)) / (1 + r) ** 10
+                    else:
+                        tv_pv = 0
+
+                    total_pv            = sum(pv_fcfs) + tv_pv
+                    intrinsic_per_share = total_pv / shares if shares and shares > 0 else None
+                    mos = ((intrinsic_per_share - current_price) / current_price * 100
+                           if intrinsic_per_share and current_price and current_price > 0 else None)
+
+                    # ── Result cards ───────────────────────────────────────────
+                    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+                    rc1, rc2, rc3, rc4 = st.columns(4)
+
+                    with rc1:
+                        iv_str = f"${intrinsic_per_share:,.2f}" if intrinsic_per_share else "N/A — no share count"
+                        st.markdown(
+                            f'<div class="metric-card">'
+                            f'<div class="metric-label">Intrinsic Value / Share</div>'
+                            f'<div class="metric-value" style="font-size:22px;">{iv_str}</div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+                    with rc2:
+                        cp_str = f"${current_price:,.2f}" if current_price else "N/A"
+                        st.markdown(
+                            f'<div class="metric-card">'
+                            f'<div class="metric-label">Current Price</div>'
+                            f'<div class="metric-value" style="font-size:22px;">{cp_str}</div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+                    with rc3:
+                        if mos is not None:
+                            mos_color = "#16a34a" if mos > 0 else "#dc2626"
+                            mos_lbl   = "Margin of Safety" if mos > 0 else "Premium to Value"
+                            mos_str   = f'{"+" if mos > 0 else ""}{mos:.1f}%'
+                        else:
+                            mos_color, mos_lbl, mos_str = "#94a3b8", "Margin of Safety", "N/A"
+                        st.markdown(
+                            f'<div class="metric-card">'
+                            f'<div class="metric-label">{mos_lbl}</div>'
+                            f'<div class="metric-value" style="font-size:22px;color:{mos_color};">{mos_str}</div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+                    with rc4:
+                        st.markdown(
+                            f'<div class="metric-card">'
+                            f'<div class="metric-label">Enterprise Value (PV)</div>'
+                            f'<div class="metric-value" style="font-size:22px;">{fmt_large(total_pv)}</div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+
+                    # PV breakdown
+                    pv_s1  = sum(pv_fcfs[:5])
+                    pv_s2  = sum(pv_fcfs[5:])
+                    bd1, bd2, bd3 = st.columns(3)
+                    for col, lbl, val in [
+                        (bd1, "PV Stage 1 (yrs 1–5)",  pv_s1),
+                        (bd2, "PV Stage 2 (yrs 6–10)", pv_s2),
+                        (bd3, "PV Terminal Value",      tv_pv),
+                    ]:
+                        pct = val / total_pv * 100 if total_pv else 0
+                        col.markdown(
+                            f'<div class="metric-card">'
+                            f'<div class="metric-label">{lbl}</div>'
+                            f'<div class="metric-value">{fmt_large(val)} '
+                            f'<span style="color:#94a3b8;font-size:12px;">({pct:.0f}%)</span></div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+
+                    # ── Projection chart ───────────────────────────────────────
+                    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+                    yr_labels = [str(latest_year + t) for t in range(1, 11)]
+                    fig_dcf = go.Figure()
+                    fig_dcf.add_trace(go.Bar(
+                        x=yr_labels,
+                        y=[v / 1e9 for v in proj_fcfs],
+                        name="Projected FCF",
+                        marker_color=["#2563eb"] * 5 + ["#7c3aed"] * 5,
+                        hovertemplate="<b>%{x}</b><br>FCF: $%{y:.2f}B<extra></extra>",
+                    ))
+                    fig_dcf.add_trace(go.Bar(
+                        x=yr_labels,
+                        y=[v / 1e9 for v in pv_fcfs],
+                        name="Present Value",
+                        marker_color=["#93c5fd"] * 5 + ["#c4b5fd"] * 5,
+                        hovertemplate="<b>%{x}</b><br>PV: $%{y:.2f}B<extra></extra>",
+                    ))
+                    fig_dcf.update_layout(
+                        paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+                        margin=dict(l=10, r=10, t=36, b=10), height=250,
+                        barmode="group",
+                        title=dict(text="Projected FCF vs Present Value  (Stage 1 = blue · Stage 2 = purple)",
+                                   font=dict(size=11, color="#64748b"), x=0),
+                        xaxis=dict(showgrid=False, tickfont=dict(size=11, color="#64748b")),
+                        yaxis=dict(showgrid=True, gridcolor="#e2e8f0",
+                                   tickfont=dict(size=11, color="#64748b"),
+                                   ticksuffix="B", title="USD Billions",
+                                   titlefont=dict(size=11, color="#94a3b8")),
+                        legend=dict(bgcolor="#ffffff", font=dict(size=11, color="#475569"),
+                                    orientation="h", x=0, y=1.12),
+                    )
+                    st.plotly_chart(fig_dcf, width="stretch")
+
+                    # ── Historical FCF table ───────────────────────────────────
+                    with st.expander("Historical Free Cash Flow (EDGAR 10-K)"):
+                        hist_rows = "".join(
+                            f'<tr><td style="padding:6px 14px;color:#64748b;">{y}</td>'
+                            f'<td style="padding:6px 14px;text-align:right;font-weight:600;'
+                            f'color:{"#16a34a" if fcf_by_year[y] >= 0 else "#dc2626"};">'
+                            f'{fmt_large(fcf_by_year[y])}</td></tr>'
+                            for y in sorted(fcf_by_year, reverse=True)
+                        )
+                        st.markdown(
+                            f'<div style="overflow-x:auto;border-radius:7px;border:1px solid #e2e8f0;">'
+                            f'<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;font-size:12px;">'
+                            f'<thead><tr>'
+                            f'<th style="padding:7px 14px;color:#94a3b8;text-align:left;font-size:10px;'
+                            f'text-transform:uppercase;background:#f1f5f9;border-bottom:1px solid #e2e8f0;">Fiscal Year</th>'
+                            f'<th style="padding:7px 14px;color:#94a3b8;text-align:right;font-size:10px;'
+                            f'text-transform:uppercase;background:#f1f5f9;border-bottom:1px solid #e2e8f0;">Free Cash Flow</th>'
+                            f'</tr></thead><tbody>{hist_rows}</tbody></table></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown(
+                        "<p style='color:#94a3b8;font-size:10.5px;margin-top:10px;line-height:1.6;'>"
+                        "<b>Methodology:</b> 2-stage DCF — Stage 1 projects FCF at the specified growth rate "
+                        "for years 1–5, Stage 2 fades to the second rate for years 6–10, then a Gordon Growth "
+                        "terminal value is applied. All future cash flows are discounted at the WACC. "
+                        "Intrinsic value per share = total PV ÷ shares outstanding (from EDGAR). "
+                        "This is for educational purposes only and is not investment advice.</p>",
+                        unsafe_allow_html=True,
+                    )
+
+        except Exception as _dcf_err:
+            st.error(f"Error running DCF for {dcf_ticker}: {_dcf_err}")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # COMPANY PROFILE DIALOG
 # ══════════════════════════════════════════════════════════════════════════════
 @st.dialog("Company Profile", width="large")
