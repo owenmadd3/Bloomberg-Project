@@ -1327,20 +1327,44 @@ st.markdown(
 with st.form("dcf_ticker_form"):
     dcf_query = st.text_input(
         "Ticker or company name",
-        placeholder="e.g. AAPL, Microsoft, NVDA…",
+        placeholder="Type a company name or ticker  (e.g.  Apple,  MSFT,  Nvidia…)",
         label_visibility="collapsed",
         key="dcf_query",
     )
-    dcf_load_btn = st.form_submit_button("Load Company", use_container_width=True)
+    dcf_search_btn = st.form_submit_button("Search", use_container_width=True)
 
-if dcf_load_btn and dcf_query:
-    q = dcf_query.strip()
-    override = NAME_OVERRIDES.get(q.lower())
-    if override:
-        st.session_state["dcf_ticker"] = override
+if dcf_search_btn and dcf_query:
+    companies = get_company_list()
+    q_up  = dcf_query.strip().upper()
+    q_low = dcf_query.strip().lower()
+    scored = []
+    for sym, name in companies:
+        name_l = name.lower()
+        if sym == q_up:                scored.append((0, len(name), name, sym))
+        elif name_l == q_low:          scored.append((1, len(name), name, sym))
+        elif name_l.startswith(q_low): scored.append((2, len(name), name, sym))
+        elif sym.startswith(q_up):     scored.append((3, len(sym),  name, sym))
+        elif q_low in name_l:          scored.append((4, len(name), name, sym))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    if len(scored) == 1:
+        st.session_state["dcf_ticker"]   = scored[0][3]
+        st.session_state["dcf_results"]  = []
+        st.rerun()
+    elif scored:
+        st.session_state["dcf_results"] = scored[:8]
     else:
-        result = resolve_company_ticker(q)
-        st.session_state["dcf_ticker"] = result[0] if result else q.upper()
+        st.session_state["dcf_results"] = []
+
+dcf_results = st.session_state.get("dcf_results", [])
+if dcf_results:
+    for _, _, name, sym in dcf_results:
+        display = f"**{sym}** &nbsp; {name[:50]}{'…' if len(name) > 50 else ''}"
+        if st.button(display, key=f"dcf_suggest_{sym}", width="stretch"):
+            st.session_state["dcf_results"] = []
+            st.session_state["dcf_ticker"]  = sym
+            st.rerun()
+elif dcf_search_btn and dcf_query:
+    st.markdown("<p style='color:#64748b; font-size:12px; margin-top:6px;'>No matches found.</p>", unsafe_allow_html=True)
 
 dcf_ticker = st.session_state.get("dcf_ticker")
 
