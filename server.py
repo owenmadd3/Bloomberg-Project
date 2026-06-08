@@ -20,7 +20,7 @@ ai_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Simple time-based cache
 _cache = {}
-def cached(key, ttl=120):
+def cached(key, ttl=30):
     """Returns (data, hit) — hit=True means cached."""
     if key in _cache:
         data, ts = _cache[key]
@@ -130,7 +130,7 @@ class ConnectionManager:
         for sym in all_symbols:
             try:
                 key = f"stock_{sym}"
-                cached_data, hit = cached(key, ttl=300)
+                cached_data, hit = cached(key, ttl=60)
                 if hit:
                     prices[sym] = {
                         "price":  cached_data.get("price", 0),
@@ -266,7 +266,7 @@ def get_markets():
 @app.get("/stock/{symbol}")
 def get_stock(symbol: str):
     key = f"stock_{symbol}"
-    data, hit = cached(key, ttl=120)
+    data, hit = cached(key, ttl=30)
     if hit: return data
     ticker = yf.Ticker(symbol)
     info = ticker.info
@@ -307,7 +307,7 @@ def get_stock(symbol: str):
 @app.get("/history/{symbol}")
 def get_history(symbol: str, period: str = "1mo"):
     key = f"history_{symbol}_{period}"
-    data, hit = cached(key, ttl=300)
+    data, hit = cached(key, ttl=60)
     if hit: return data
     ticker = yf.Ticker(symbol)
     hist = ticker.history(period=period)
@@ -1202,7 +1202,7 @@ def portfolio_quotes(symbols: str = ""):
     for sym in syms:
         # Use stock cache if available (30s TTL)
         key = f"stock_{sym}"
-        cached_data, hit = cached(key, ttl=120)
+        cached_data, hit = cached(key, ttl=30)
         if hit:
             results[sym] = {
                 "price": cached_data.get("price", 0),
