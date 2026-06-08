@@ -1,6 +1,10 @@
-streamlit
-yfinance
-plotly
-pandas
-requests
-curl_cffi
+fastapi==0.128.8
+uvicorn==0.40.0
+yfinance==1.4.1
+pandas==3.0.3
+numpy==2.4.6
+requests==2.34.2
+groq==1.4.0
+python-dotenv==1.2.2
+aiofiles==25.1.0
+anthropic==0.105.2
