@@ -46,7 +46,16 @@
       "Bash(pkill -f \"finance_tools.py\")",
       "Bash(pkill -f \"streamlit run app.py\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/finance_tools.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
-      "Bash(python3 -c \"import ast, sys; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/app.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
+      "Bash(python3 -c \"import ast, sys; ast.parse\\(open\\('/Users/owenmadden/Desktop/Bloomberg Project/app.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -c \"import openbb_core; print\\(openbb_core.__version__\\)\")",
+      "Bash(python3 -c \"from openbb import obb; print\\(dir\\(obb\\)\\)\")",
+      "WebFetch(domain:medium.com)",
+      "WebSearch",
+      "WebFetch(domain:sekoudoumbouya.com)",
+      "WebFetch(domain:arthashashtr.substack.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:godelterminal.com)"
     ]
   }
 }
