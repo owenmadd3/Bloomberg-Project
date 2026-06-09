@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
 from datetime import timezone
+from pathlib import Path
 
 st.set_page_config(page_title="52-Week New Highs / New Lows", page_icon=None, layout="wide")
 
@@ -46,8 +47,8 @@ NYSE_FALLBACK = [
     "T","VZ","DIS","CMCSA","WBD","PARA",
     "BRK-B","V","MA","UNP","CB","MMC","AON","ICE","CME","SPGI","MCO","TRV","AFL","ALL","MET",
 ]
-INDEX_TICKER = {"NYSE": "^NYA"}
-INDEX_LABEL  = {"NYSE": "NYSE Composite"}
+INDEX_TICKER = {"NYSE": "ES=F"}   # E-mini S&P 500 futures = Bloomberg ES1
+INDEX_LABEL  = {"NYSE": "S&P 500 E-Mini Futures"}
 INDEX_SYM    = {"NYSE": "ES1"}
 BBG_HI      = {"NYSE": "NWHLNYHI"}
 BBG_LO      = {"NYSE": "NWHLNYLO"}
@@ -57,16 +58,17 @@ BBG_NAME_LO = {"NYSE": "Bloomberg New 52 Week Lows NYSE"}
 exchange = "NYSE"
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_price_data(tickers: tuple, start_str: str) -> pd.DataFrame:
-    batch_size = 200
-    ticker_list = list(tickers)
+_CACHE_DIR   = Path(__file__).resolve().parent.parent / ".yf_cache"
+_PRICES_FILE = _CACHE_DIR / "nyse_prices.pkl"
+
+def _download_prices(ticker_list: list, start_str: str) -> pd.DataFrame:
+    batch_size = 300
     frames = []
     for i in range(0, len(ticker_list), batch_size):
         batch = ticker_list[i : i + batch_size]
         try:
             raw = yf.download(batch, start=start_str, auto_adjust=True,
-                              progress=False, threads=False)["Close"]
+                              progress=False, threads=True)["Close"]
             if isinstance(raw, pd.Series):
                 raw = raw.to_frame()
             frames.append(raw)
@@ -77,22 +79,66 @@ def load_price_data(tickers: tuple, start_str: str) -> pd.DataFrame:
     combined = pd.concat(frames, axis=1)
     combined = combined.loc[:, ~combined.columns.duplicated()]
     combined.dropna(how="all", inplace=True)
+    return combined.astype("float32")   # halves memory/disk for the 20Y panel
+
+# cache_resource: shared object, no 50MB+ copy/hash per rerun (treat as read-only)
+@st.cache_resource(ttl=1800, show_spinner=False)
+def load_price_data(tickers: tuple, start_str: str) -> pd.DataFrame:
+    # Disk cache survives process restarts, so a fresh server only tops up
+    # the missing tail instead of re-downloading years of history.
+    cached = None
+    try:
+        if _PRICES_FILE.exists():
+            cached = pd.read_pickle(_PRICES_FILE)
+            if not all(d == "float32" for d in cached.dtypes):
+                cached = cached.astype("float32")
+    except Exception:
+        cached = None
+
+    if cached is not None and not cached.empty and \
+       cached.index.min() <= pd.Timestamp(start_str) + pd.Timedelta(days=10):
+        last  = cached.index.max()
+        today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+        bdays_behind = len(pd.bdate_range(last.normalize(), today)) - 1
+        age_sec = _now.timestamp() - _PRICES_FILE.stat().st_mtime
+        if bdays_behind <= 0 and (not _market_open or age_sec < 1800):
+            return cached
+        new = _download_prices(list(tickers), (last - pd.Timedelta(days=7)).strftime("%Y-%m-%d"))
+        if new.empty:
+            return cached
+        combined = pd.concat([cached[cached.index < new.index.min()], new])
+        combined = combined[~combined.index.duplicated(keep="last")]
+    else:
+        combined = _download_prices(list(tickers), start_str)
+
+    if not combined.empty:
+        try:
+            _CACHE_DIR.mkdir(exist_ok=True)
+            combined.to_pickle(_PRICES_FILE)
+        except Exception:
+            pass
     return combined
 
+# _price_df is excluded from the cache key (leading underscore); data_token —
+# (shape, last date) — stands in for it so reruns don't hash the big frame.
 @st.cache_data(ttl=3600, show_spinner=False)
-def compute_breadth(price_df: pd.DataFrame) -> pd.DataFrame:
-    records = []
-    n = len(price_df)
-    for i in range(252, n):
-        window = price_df.iloc[i - 252:i]
-        today  = price_df.iloc[i]
-        nh = int((today >= window.max() * 0.999).sum())
-        nl = int((today <= window.min() * 1.001).sum())
-        records.append({"date": price_df.index[i], "new_highs": nh, "new_lows": nl})
-    return pd.DataFrame(records).set_index("date")
+def compute_breadth(_price_df: pd.DataFrame, data_token: tuple) -> pd.DataFrame:
+    price_df = _price_df
+    if price_df.empty or len(price_df) <= 252:
+        return pd.DataFrame(columns=["new_highs", "new_lows"])
+    # Rolling window over the prior 252 sessions, excluding today.
+    # min_periods keeps recent listings from counting as instant highs/lows.
+    prior     = price_df.shift(1)
+    roll_high = prior.rolling(252, min_periods=126).max()
+    roll_low  = prior.rolling(252, min_periods=126).min()
+    out = pd.DataFrame({
+        "new_highs": price_df.gt(roll_high).sum(axis=1).astype(int),
+        "new_lows":  price_df.lt(roll_low).sum(axis=1).astype(int),
+    })
+    out.index.name = "date"
+    return out.iloc[252:]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_constituents(price_df: pd.DataFrame, as_of: str):
     """Return (highs_df, lows_df) for a given date string YYYY-MM-DD."""
     if as_of not in price_df.index:
@@ -105,11 +151,12 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
 
     window      = price_df.iloc[idx - 252 : idx]
     today_row   = price_df.iloc[idx]
+    valid       = window.count() >= 126
     roll_high   = window.max()
     roll_low    = window.min()
 
-    hi_mask = today_row >= roll_high * 0.999
-    lo_mask = today_row <= roll_low  * 1.001
+    hi_mask = today_row.gt(roll_high) & valid
+    lo_mask = today_row.lt(roll_low)  & valid
 
     def build_table(mask, roll_ref, label):
         tickers = today_row[mask].index.tolist()
@@ -128,7 +175,7 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
     return hi_df, lo_df
 
 
-@st.cache_data(ttl=15, show_spinner=False)   # 15s to match refresh interval
+@st.cache_data(ttl=300, show_spinner=False)   # live header uses fast_info; history can lag
 def load_index(ticker: str, start_str: str) -> pd.DataFrame:
     df = yf.download(ticker, start=start_str, auto_adjust=True, progress=False)
     df.index = pd.to_datetime(df.index)
@@ -156,6 +203,7 @@ def fetch_exchange_tickers(exchange: str) -> list:
         mask = (
             (df["Exchange"] == "N") &
             (df["Test Issue"] == "N") &
+            (df["ETF"] == "N") &                       # Bloomberg counts stocks only
             (df["ACT Symbol"].str.match(r"^[A-Z]{1,5}$"))
         )
         tickers = df[mask]["ACT Symbol"].tolist()
@@ -301,8 +349,8 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-# ── Load data — fetch 2 years (252 days rolling window + 1 year display) ─────
-fetch_start = (datetime.today() - timedelta(days=365*3 + 270)).strftime("%Y-%m-%d")
+# ── Load data — 20Y display + 252-day rolling warmup + buffer ────────────────
+fetch_start = (datetime.today() - timedelta(days=365*21 + 120)).strftime("%Y-%m-%d")
 
 with st.spinner(f"Fetching {exchange} ticker list..."):
     full_list = fetch_exchange_tickers(exchange)
@@ -312,7 +360,8 @@ index_sym = INDEX_TICKER[exchange]
 
 with st.spinner(f"Loading {exchange} data..."):
     prices  = load_price_data(tickers, fetch_start)
-    breadth = compute_breadth(prices)
+    data_token = (prices.shape, str(prices.index[-1])) if not prices.empty else ((0, 0), "")
+    breadth = compute_breadth(prices, data_token)
     idx_df  = load_index(index_sym, fetch_start)
 
 idx_trim = idx_df  # no upfront trimming; buttons/pickers do all filtering
@@ -446,11 +495,24 @@ fig = make_subplots(
     vertical_spacing=0.02,
 )
 
-# Panel 1 — index price line
-if not iv.empty:
+# Panel 1 — index daily OHLC bars (Bloomberg-style); line for long ranges,
+# where thousands of bars render slowly and read as noise
+ohlc_mode = not iv.empty and (date_to - date_from).days <= 1100
+if ohlc_mode:
+    fig.add_trace(go.Ohlc(
+        x=iv.index,
+        open=iv["Open"].squeeze().astype(float),
+        high=iv["High"].squeeze().astype(float),
+        low=iv["Low"].squeeze().astype(float),
+        close=icv,
+        increasing=dict(line=dict(color="#2196f3", width=1.2)),
+        decreasing=dict(line=dict(color="#90a4ae", width=1.2)),
+        name=f"{INDEX_SYM[exchange]} Index - Last Price {idx_last:,.0f}",
+    ), row=1, col=1)
+elif not iv.empty:
     fig.add_trace(go.Scatter(
         x=iv.index, y=icv, mode="lines",
-        line=dict(color="#4fc3f7", width=1.2),
+        line=dict(color="#2196f3", width=1.2),
         name=f"{INDEX_SYM[exchange]} Index - Last Price {idx_last:,.0f}",
         hovertemplate=f"<b>{INDEX_SYM[exchange]}</b> %{{y:,.2f}}<extra></extra>",
     ), row=1, col=1)
@@ -496,14 +558,16 @@ fig.update_layout(
     modebar=dict(bgcolor="rgba(0,0,0,0)", color="#555", activecolor="#4fc3f7"),
 )
 
-# Both panels — single right-side y-axis
+# Both panels — single right-side y-axis; breadth panel anchored at zero
 fig.update_yaxes(side="right", row=1, col=1, **ax_base)
-fig.update_yaxes(side="right", row=2, col=1, **ax_base)
+fig.update_yaxes(side="right", rangemode="tozero", row=2, col=1, **ax_base)
 
-fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
-                 rangeslider_visible=False, **spike, row=1, col=1)
-fig.update_xaxes(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
-                 rangeslider_visible=False, **spike, row=2, col=1)
+xax = dict(showgrid=True, gridcolor="#e8e8e8", tickfont=dict(color="#555", size=10, family="monospace"),
+           rangeslider_visible=False, **spike)
+if ohlc_mode:   # weekend gaps only matter for bars; rangebreaks slow long-range panning
+    xax["rangebreaks"] = [dict(bounds=["sat", "mon"])]
+fig.update_xaxes(row=1, col=1, **xax)
+fig.update_xaxes(row=2, col=1, **xax)
 
 st.plotly_chart(fig, use_container_width=True, config={
     "scrollZoom": True, "displayModeBar": True, "displaylogo": False,
