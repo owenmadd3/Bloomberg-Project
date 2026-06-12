@@ -1,0 +1,27 @@
+# Render deployment blueprint for the Bloomberg-style terminal (server.py + index.html).
+# Render reads this file automatically when you create a "Blueprint" from the repo.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: bloomberg-terminal
+    runtime: python
+    # "free" sleeps after ~15 min idle (first hit afterward takes ~50s to wake).
+    # Change to "starter" (~$7/mo) to keep it always-on for your boss. Nothing
+    # else needs to change.
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    # Render pings "/" to confirm the app is up; server.py serves index.html there.
+    healthCheckPath: /
+    envVars:
+      # Pinned for reliable binary wheels (curl_cffi / numpy / pandas). The app
+      # runs on 3.14 locally, but 3.12 has the broadest wheel coverage on Render.
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      # sync: false  → Render will NOT read these from the repo. Whoever deploys
+      # types them into the Render dashboard once (Environment tab). Keeps secrets
+      # out of git. See HANDOFF.md for where to get the keys.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
