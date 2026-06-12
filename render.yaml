@@ -11,8 +11,13 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
-    # Render pings "/" to confirm the app is up; server.py serves index.html there.
-    healthCheckPath: /
+    # NOTE: No healthCheckPath on purpose. With one set, Render does a strict 5s
+    # HTTP GET on "/" every few seconds and RESTARTS the instance if it times out.
+    # On the free 0.1-CPU plan, heavy endpoints (e.g. /morning-brief fanning out to
+    # many yfinance calls) spike the CPU long enough to miss that 5s window, which
+    # triggered restart-flapping + 502s. Omitting it makes Render use a lenient
+    # port-open check instead, so a busy-but-alive instance is left running.
+    # Once on the Starter plan (more CPU), you can re-add `healthCheckPath: /`.
     envVars:
       # Pinned for reliable binary wheels (curl_cffi / numpy / pandas). The app
       # runs on 3.14 locally, but 3.12 has the broadest wheel coverage on Render.
