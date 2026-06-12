@@ -1,3 +1,5 @@
+import json
+import hashlib
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -21,7 +23,7 @@ st.markdown("""
   .bbg-field-row {
     display: flex; justify-content: space-between;
     font-family: monospace; font-size: 11px;
-    padding: 3px 0; border-bottom: 1px solid #1e1e1e;
+    padding: 3px 0; border-bottom: 1px solid #e0e0e0;
   }
   .bbg-field-key { color: #666; }
   .bbg-field-val { color: #111; }
@@ -58,8 +60,15 @@ BBG_NAME_LO = {"NYSE": "Bloomberg New 52 Week Lows NYSE"}
 exchange = "NYSE"
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
-_CACHE_DIR   = Path(__file__).resolve().parent.parent / ".yf_cache"
-_PRICES_FILE = _CACHE_DIR / "nyse_prices.pkl"
+# First-paint strategy: serve whatever is on disk immediately and mark it
+# stale; the deferred block at the bottom of the script tops it up *after*
+# the page has rendered, then reruns. Only a first-ever run (empty disk)
+# blocks on the network.
+_CACHE_DIR    = Path(__file__).resolve().parent.parent / ".yf_cache"
+_PRICES_FILE  = _CACHE_DIR / "nyse_prices.pkl"
+_BREADTH_FILE = _CACHE_DIR / "nyse_breadth.pkl"
+_INDEX_FILE   = _CACHE_DIR / "nyse_index.pkl"
+_TICKERS_FILE = _CACHE_DIR / "nyse_tickers.json"
 
 def _download_prices(ticker_list: list, start_str: str) -> pd.DataFrame:
     batch_size = 300
@@ -82,42 +91,93 @@ def _download_prices(ticker_list: list, start_str: str) -> pd.DataFrame:
     return combined.astype("float32")   # halves memory/disk for the 20Y panel
 
 # cache_resource: shared object, no 50MB+ copy/hash per rerun (treat as read-only)
-@st.cache_resource(ttl=1800, show_spinner=False)
-def load_price_data(tickers: tuple, start_str: str) -> pd.DataFrame:
-    # Disk cache survives process restarts, so a fresh server only tops up
-    # the missing tail instead of re-downloading years of history.
-    cached = None
+# Keyed by file mtime so a background top-up automatically invalidates it.
+@st.cache_resource(max_entries=2, show_spinner=False)
+def _read_prices_file(mtime: float) -> pd.DataFrame | None:
     try:
-        if _PRICES_FILE.exists():
-            cached = pd.read_pickle(_PRICES_FILE)
-            if not all(d == "float32" for d in cached.dtypes):
-                cached = cached.astype("float32")
+        cached = pd.read_pickle(_PRICES_FILE)
+        if not all(d == "float32" for d in cached.dtypes):
+            cached = cached.astype("float32")
+        return cached
     except Exception:
-        cached = None
+        return None
 
-    if cached is not None and not cached.empty and \
-       cached.index.min() <= pd.Timestamp(start_str) + pd.Timedelta(days=10):
-        last  = cached.index.max()
-        today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
-        bdays_behind = len(pd.bdate_range(last.normalize(), today)) - 1
-        age_sec = _now.timestamp() - _PRICES_FILE.stat().st_mtime
-        if bdays_behind <= 0 and (not _market_open or age_sec < 1800):
-            return cached
-        new = _download_prices(list(tickers), (last - pd.Timedelta(days=7)).strftime("%Y-%m-%d"))
-        if new.empty:
-            return cached
-        combined = pd.concat([cached[cached.index < new.index.min()], new])
-        combined = combined[~combined.index.duplicated(keep="last")]
-    else:
-        combined = _download_prices(list(tickers), start_str)
+def _prices_fresh(cached: pd.DataFrame) -> bool:
+    last  = cached.index.max()
+    today = pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
+    bdays_behind = len(pd.bdate_range(last.normalize(), today)) - 1
+    age_sec = _now.timestamp() - _PRICES_FILE.stat().st_mtime
+    return bdays_behind <= 0 and (not _market_open or age_sec < 1800)
 
+def get_prices_swr(tickers: tuple, start_str: str):
+    """Return (prices, stale). Serves the disk cache without touching the
+    network; only a first-ever run (no usable disk file) blocks on a full
+    download. Stale data is topped up by the deferred block after render."""
+    if _PRICES_FILE.exists():
+        cached = _read_prices_file(_PRICES_FILE.stat().st_mtime)
+        if cached is not None and not cached.empty and \
+           cached.index.min() <= pd.Timestamp(start_str) + pd.Timedelta(days=10):
+            return cached, not _prices_fresh(cached)
+    combined = _download_prices(list(tickers), start_str)
     if not combined.empty:
         try:
             _CACHE_DIR.mkdir(exist_ok=True)
             combined.to_pickle(_PRICES_FILE)
         except Exception:
             pass
-    return combined
+    return combined, False
+
+def _refresh_prices_on_disk(tickers: tuple, start_str: str) -> bool:
+    """Top up the disk pickle's tail; True if the data actually changed."""
+    cached = None
+    if _PRICES_FILE.exists():
+        cached = _read_prices_file(_PRICES_FILE.stat().st_mtime)
+    if cached is None or cached.empty or \
+       cached.index.min() > pd.Timestamp(start_str) + pd.Timedelta(days=10):
+        combined = _download_prices(list(tickers), start_str)
+        changed = not combined.empty
+    else:
+        last = cached.index.max()
+        new = _download_prices(list(tickers), (last - pd.Timedelta(days=7)).strftime("%Y-%m-%d"))
+        if new.empty:
+            return False
+        combined = pd.concat([cached[cached.index < new.index.min()], new])
+        combined = combined[~combined.index.duplicated(keep="last")].astype("float32")
+        changed = (combined.index[-1] != cached.index[-1]) or \
+                  (combined.shape != cached.shape) or \
+                  not combined.iloc[-1].equals(cached.iloc[-1])
+    if combined.empty:
+        return False
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        combined.to_pickle(_PRICES_FILE)
+    except Exception:
+        return False
+    return changed
+
+def _breadth_rows_for(price_df: pd.DataFrame, dates) -> pd.DataFrame:
+    """Per-date high/low counts via explicit windows; matches the rolling
+    semantics of the full compute (prior 252 sessions, min 126 obs)."""
+    rows, idx_out = [], []
+    for d in dates:
+        i = price_df.index.get_loc(d)
+        if i < 252:
+            continue
+        window    = price_df.iloc[i - 252 : i]
+        today_row = price_df.iloc[i]
+        valid     = window.count() >= 126
+        rows.append((
+            int((today_row.gt(window.max()) & valid).sum()),
+            int((today_row.lt(window.min()) & valid).sum()),
+        ))
+        idx_out.append(d)
+    out = pd.DataFrame(rows, index=idx_out, columns=["new_highs", "new_lows"])
+    out.index.name = "date"
+    return out
+
+def _cols_key(price_df: pd.DataFrame) -> str:
+    # built-in hash() is salted per process; md5 is stable across restarts
+    return hashlib.md5("|".join(map(str, price_df.columns)).encode()).hexdigest()
 
 # _price_df is excluded from the cache key (leading underscore); data_token —
 # (shape, last date) — stands in for it so reruns don't hash the big frame.
@@ -126,6 +186,31 @@ def compute_breadth(_price_df: pd.DataFrame, data_token: tuple) -> pd.DataFrame:
     price_df = _price_df
     if price_df.empty or len(price_df) <= 252:
         return pd.DataFrame(columns=["new_highs", "new_lows"])
+
+    # Disk fast path: a cold server reuses the saved series instead of
+    # recomputing 20Y of rolling windows; a top-up only recomputes the tail.
+    # The last stored rows are always healed because they may come from a
+    # partial intraday bar or be restated by the 7-day price top-up.
+    cols_key = _cols_key(price_df)
+    try:
+        if _BREADTH_FILE.exists():
+            stored = pd.read_pickle(_BREADTH_FILE)
+            if stored.get("cols_key") == cols_key and not stored["breadth"].empty:
+                bdf = stored["breadth"]
+                if stored.get("token") == data_token:
+                    return bdf
+                heal_pos   = max(0, len(bdf) - 7)
+                heal_start = bdf.index[heal_pos]
+                if heal_start in price_df.index:
+                    dates = price_df.index[price_df.index >= heal_start]
+                    if 0 < len(dates) <= 40:
+                        out = pd.concat([bdf.iloc[:heal_pos],
+                                         _breadth_rows_for(price_df, dates)])
+                        _save_breadth(out, cols_key, data_token)
+                        return out
+    except Exception:
+        pass
+
     # Rolling window over the prior 252 sessions, excluding today.
     # min_periods keeps recent listings from counting as instant highs/lows.
     prior     = price_df.shift(1)
@@ -136,7 +221,17 @@ def compute_breadth(_price_df: pd.DataFrame, data_token: tuple) -> pd.DataFrame:
         "new_lows":  price_df.lt(roll_low).sum(axis=1).astype(int),
     })
     out.index.name = "date"
-    return out.iloc[252:]
+    out = out.iloc[252:]
+    _save_breadth(out, cols_key, data_token)
+    return out
+
+def _save_breadth(breadth_df: pd.DataFrame, cols_key: str, data_token: tuple):
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        pd.to_pickle({"token": data_token, "cols_key": cols_key, "breadth": breadth_df},
+                     _BREADTH_FILE)
+    except Exception:
+        pass
 
 
 def get_constituents(price_df: pd.DataFrame, as_of: str):
@@ -175,11 +270,57 @@ def get_constituents(price_df: pd.DataFrame, as_of: str):
     return hi_df, lo_df
 
 
-@st.cache_data(ttl=300, show_spinner=False)   # live header uses fast_info; history can lag
-def load_index(ticker: str, start_str: str) -> pd.DataFrame:
+def _download_index(ticker: str, start_str: str) -> pd.DataFrame:
     df = yf.download(ticker, start=start_str, auto_adjust=True, progress=False)
     df.index = pd.to_datetime(df.index)
     return df
+
+@st.cache_resource(max_entries=2, show_spinner=False)
+def _read_index_file(mtime: float) -> pd.DataFrame | None:
+    try:
+        return pd.read_pickle(_INDEX_FILE)
+    except Exception:
+        return None
+
+def get_index_swr(ticker: str, start_str: str):
+    """Return (index_df, stale). Live quotes come from the fast_info header
+    fragment, so the historical panel can lag a little; refresh it in the
+    deferred block instead of blocking render."""
+    if _INDEX_FILE.exists():
+        df = _read_index_file(_INDEX_FILE.stat().st_mtime)
+        if df is not None and not df.empty:
+            age = _now.timestamp() - _INDEX_FILE.stat().st_mtime
+            bdays_behind = len(pd.bdate_range(
+                df.index.max().normalize(),
+                pd.Timestamp.now(tz="UTC").tz_localize(None).normalize())) - 1
+            covers = df.index.min() <= pd.Timestamp(start_str) + pd.Timedelta(days=45)
+            stale = (not covers) or bdays_behind > 0 or (_market_open and age > 900)
+            return df, stale
+    df = _download_index(ticker, start_str)
+    if not df.empty:
+        try:
+            _CACHE_DIR.mkdir(exist_ok=True)
+            df.to_pickle(_INDEX_FILE)
+        except Exception:
+            pass
+    return df, False
+
+def _refresh_index_on_disk(ticker: str, start_str: str) -> bool:
+    old = _read_index_file(_INDEX_FILE.stat().st_mtime) if _INDEX_FILE.exists() else None
+    try:
+        df = _download_index(ticker, start_str)
+    except Exception:
+        return False
+    if df.empty:
+        return False
+    changed = old is None or old.empty or df.index[-1] != old.index[-1] or \
+              not df.iloc[-1].equals(old.iloc[-1])
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        df.to_pickle(_INDEX_FILE)
+    except Exception:
+        return False
+    return changed
 
 def safe_float(val):
     if hasattr(val, "iloc"):
@@ -309,6 +450,27 @@ def fetch_exchange_tickers(exchange: str) -> list:
         return combined
     return list(dict.fromkeys(NYSE_FALLBACK + EXTRA_NYSE))
 
+def _write_tickers_file(ticker_list: list):
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        _TICKERS_FILE.write_text(json.dumps(
+            {"date": str(date.today()), "tickers": ticker_list}))
+    except Exception:
+        pass
+
+def get_tickers_swr(exchange: str):
+    """Return (tickers, stale). Yesterday's saved list paints the page now;
+    the deferred block refreshes it once a day."""
+    try:
+        d = json.loads(_TICKERS_FILE.read_text())
+        if isinstance(d.get("tickers"), list) and len(d["tickers"]) > 100:
+            return d["tickers"], d.get("date") != str(date.today())
+    except Exception:
+        pass
+    ticker_list = fetch_exchange_tickers(exchange)
+    _write_tickers_file(ticker_list)
+    return ticker_list, False
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     smoothing = st.slider("Smoothing (day MA)", 1, 10, 1)
@@ -319,10 +481,10 @@ with st.sidebar:
     ticker_shown = BBG_HI[exchange] if view_series == "Highs" else BBG_LO[exchange]
     name_shown   = BBG_NAME_HI[exchange] if view_series == "Highs" else BBG_NAME_LO[exchange]
 
-    st.markdown(f"<div style='color:#ffd600;font-family:monospace;font-size:13px;font-weight:bold'>{ticker_shown} Index</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='color:#00bcd4;font-family:monospace;font-size:11px;margin-bottom:6px'>{name_shown}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:#b8860b;font-family:monospace;font-size:13px;font-weight:bold'>{ticker_shown} Index</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='color:#00838f;font-family:monospace;font-size:11px;margin-bottom:6px'>{name_shown}</div>", unsafe_allow_html=True)
     st.markdown(
-        "<div style='color:#666;font-family:monospace;font-size:10px;border-left:2px solid #333;"
+        "<div style='color:#666;font-family:monospace;font-size:10px;border-left:2px solid #bbb;"
         "padding-left:6px;margin-bottom:8px;line-height:1.5'>"
         "The New Highs and New Lows indices represent the 52-week highs/lows for a specific exchange "
         "on a given day. Computed from closing prices using a rolling 252-trading-day window. "
@@ -353,16 +515,19 @@ with st.sidebar:
 fetch_start = (datetime.today() - timedelta(days=365*21 + 120)).strftime("%Y-%m-%d")
 
 with st.spinner(f"Fetching {exchange} ticker list..."):
-    full_list = fetch_exchange_tickers(exchange)
+    full_list, tickers_stale = get_tickers_swr(exchange)
 tickers = tuple(full_list)
 
 index_sym = INDEX_TICKER[exchange]
 
 with st.spinner(f"Loading {exchange} data..."):
-    prices  = load_price_data(tickers, fetch_start)
-    data_token = (prices.shape, str(prices.index[-1])) if not prices.empty else ((0, 0), "")
+    prices, prices_stale = get_prices_swr(tickers, fetch_start)
+    # mtime in the token: any prices rewrite (incl. intraday value-only
+    # updates with unchanged shape) triggers the cheap tail heal above
+    prices_mtime = int(_PRICES_FILE.stat().st_mtime) if _PRICES_FILE.exists() else 0
+    data_token = (prices.shape, str(prices.index[-1]), prices_mtime) if not prices.empty else ((0, 0), "", 0)
     breadth = compute_breadth(prices, data_token)
-    idx_df  = load_index(index_sym, fetch_start)
+    idx_df, index_stale = get_index_swr(index_sym, fetch_start)
 
 idx_trim = idx_df  # no upfront trimming; buttons/pickers do all filtering
 
@@ -631,3 +796,34 @@ with st.expander("Raw Breadth Data"):
     display.columns = [f"{BBG_HI[exchange]} (New Highs)", f"{BBG_LO[exchange]} (New Lows)"]
     display.index = display.index.strftime("%m/%d/%Y")
     st.dataframe(display.iloc[::-1].head(120), use_container_width=True, height=320)
+
+# ── Deferred refresh ──────────────────────────────────────────────────────────
+# Everything above is already on screen; now top up whatever was served stale
+# and rerun so the fresh data paints. The min-age gate paces retries when a
+# refresh can't advance the data (e.g. Yahoo hasn't posted yesterday's close),
+# which also prevents rerun loops.
+_REFRESH_MIN_AGE = 600
+
+def _file_age(path: Path) -> float:
+    try:
+        return _now.timestamp() - path.stat().st_mtime
+    except OSError:
+        return float("inf")
+
+if tickers_stale or prices_stale or index_stale:
+    data_changed = False
+    if tickers_stale:
+        try:
+            fresh_list = fetch_exchange_tickers(exchange)
+            if len(fresh_list) > 100:
+                _write_tickers_file(fresh_list)
+                tickers = tuple(fresh_list)
+        except Exception:
+            pass
+    if prices_stale and _file_age(_PRICES_FILE) > _REFRESH_MIN_AGE:
+        st.toast("Updating NYSE prices in the background…")
+        data_changed |= _refresh_prices_on_disk(tickers, fetch_start)
+    if index_stale and _file_age(_INDEX_FILE) > _REFRESH_MIN_AGE:
+        data_changed |= _refresh_index_on_disk(index_sym, fetch_start)
+    if data_changed:
+        st.rerun()

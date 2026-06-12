@@ -1,0 +1,10 @@
+[theme]
+# Force the light theme so Streamlit's native widgets (date pickers, menus,
+# sliders, tab underlines) don't inherit the visitor's OS dark mode. The pages
+# already paint a white background via injected CSS; this stops the chrome
+# underneath from rendering dark.
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f5f5"
+textColor = "#111111"
