@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yfinance as yf
@@ -12,11 +12,48 @@ import time
 import asyncio
 import json
 from functools import lru_cache
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from groq import Groq
+from valuation import compute_valuation
 
 load_dotenv()
 ai_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# ── Resilient yFinance session ───────────────────────────────
+# Yahoo aggressively rate-limits (HTTP 429 → YFRateLimitError), which yfinance
+# does NOT retry on its own. We install one global session that (a) impersonates
+# a real browser to reduce throttling and (b) retries 429s with exponential
+# backoff at the HTTP layer. yfinance's YfData is a singleton, so setting the
+# session on a single Ticker registers it for every yf.Ticker(...) call.
+try:
+    from curl_cffi import requests as _cffi_requests
+
+    class _ResilientYFSession(_cffi_requests.Session):
+        def request(self, method, url, *args, **kwargs):
+            delay = 1.0
+            for attempt in range(4):
+                resp = super().request(method, url, *args, **kwargs)
+                if getattr(resp, "status_code", 200) == 429 and attempt < 3:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                return resp
+            return resp
+
+    _YF_SESSION = _ResilientYFSession(impersonate="chrome")
+    yf.Ticker("SPY", session=_YF_SESSION)  # registers globally (singleton)
+except Exception as _yf_sess_err:
+    print(f"[yf] resilient session unavailable, using default: {_yf_sess_err}")
+
+try:
+    yf.config.network.retries = 2  # retry transient network errors (not 429s)
+except Exception:
+    try:
+        yf.set_config(retries=2)
+    except Exception:
+        pass
 
 # Simple time-based cache
 _cache = {}
@@ -31,7 +68,16 @@ def cached(key, ttl=30):
 def set_cache(key, data):
     _cache[key] = (data, time.time())
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start background price broadcaster (replaces deprecated @app.on_event)
+    task = asyncio.create_task(price_broadcast_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +87,24 @@ app.add_middleware(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Return clean JSON instead of a 500 + traceback when an endpoint fails.
+# Yahoo rate-limits surface as YFRateLimitError → 503 so the client can retry.
+try:
+    from yfinance.exceptions import YFRateLimitError
+except Exception:  # pragma: no cover
+    class YFRateLimitError(Exception):
+        pass
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, YFRateLimitError):
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Market data provider (Yahoo) is rate-limiting right now. "
+                              "Please retry in a few seconds.", "rate_limited": True},
+        )
+    return JSONResponse(status_code=500, content={"error": str(exc) or type(exc).__name__})
 
 @app.get("/")
 def serve_index():
@@ -174,11 +238,7 @@ async def websocket_prices(ws: WebSocket):
     except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
         manager.disconnect(ws)
 
-# Background task to push prices every 5 seconds
-@app.on_event("startup")
-async def start_price_broadcaster():
-    asyncio.create_task(price_broadcast_loop())
-
+# Background task to push prices every 5 seconds (started via the lifespan handler)
 async def price_broadcast_loop():
     while True:
         await asyncio.sleep(5)
@@ -276,8 +336,8 @@ def get_stock(symbol: str):
         "price": info.get("currentPrice") or info.get("regularMarketPrice", "N/A"),
         "prev_close": info.get("previousClose", "N/A"),
         "open": info.get("open", "N/A"),
-        "change": round(info.get("regularMarketChangePercent", 0), 2),
-        "change_abs": round(info.get("regularMarketChange", 0), 2),
+        "change": round(info.get("regularMarketChangePercent", 0) or 0, 2),
+        "change_abs": round(info.get("regularMarketChange", 0) or 0, 2),
         "market_cap": info.get("marketCap", "N/A"),
         "pe_ratio": info.get("trailingPE", "N/A"),
         "fwd_pe": info.get("forwardPE", "N/A"),
@@ -1300,7 +1360,7 @@ def get_allq(symbol: str):
         "symbol":          symbol.upper(),
         "name":            info.get("longName", ""),
         "regular_price":   info.get("currentPrice") or info.get("regularMarketPrice", "N/A"),
-        "regular_change":  round(info.get("regularMarketChangePercent", 0), 2),
+        "regular_change":  round(info.get("regularMarketChangePercent", 0) or 0, 2),
         "pre_price":       info.get("preMarketPrice", "N/A"),
         "pre_change":      round(info.get("preMarketChangePercent", 0) or 0, 2),
         "post_price":      info.get("postMarketPrice", "N/A"),
@@ -1319,6 +1379,415 @@ def get_allq(symbol: str):
         "52w_high":        info.get("fiftyTwoWeekHigh", "N/A"),
         "52w_low":         info.get("fiftyTwoWeekLow", "N/A"),
     }
+
+# ── FRED INDICATORS ──────────────────────────────────────────
+FRED_SERIES = [
+    # (series_id, display_name, unit, higher_is_bad, kpi)
+    ("GDPC1",      "GDP",                       "%", False, True),
+    ("UNRATE",     "Unemployment Rate",          "%", True,  True),
+    ("CPIAUCSL",   "CPI YoY",                   "%", True,  True),
+    ("PCEPILFE",   "Core PCE YoY",              "%", True,  True),
+    ("FEDFUNDS",   "Fed Funds Rate",             "%", False, True),
+    ("DGS10",      "10Y Treasury",               "%", False, True),
+    ("T10Y2Y",     "10Y-2Y Spread",             "%", False, False),
+    ("ICSA",       "Initial Jobless Claims",     "K", True,  False),
+    ("PAYEMS",     "Nonfarm Payrolls",           "K", False, False),
+    ("CIVPART",    "Labor Force Participation",  "%", False, False),
+    ("M2SL",       "M2 Money Supply",            "B", False, False),
+    ("PSAVERT",    "Personal Savings Rate",      "%", False, False),
+    ("UMCSENT",    "Consumer Sentiment",         "",  False, False),
+    ("HOUST",      "Housing Starts",             "K", False, False),
+    ("INDPRO",     "Industrial Production",      "%", False, False),
+]
+
+@app.get("/fred-indicators")
+def fred_indicators():
+    key = "fred_indicators"
+    data, hit = cached(key, ttl=3600)
+    if hit: return data
+
+    fred_key = os.getenv("FRED_API_KEY", "")
+    results = []
+
+    if not fred_key:
+        # Fallback: use BLS + yfinance for key indicators without FRED key
+        try:
+            bls_data = fetch_bls_series(["LNS14000000","CUUR0000SA0","CES0000000001","ICSA"])
+        except:
+            bls_data = {}
+
+        unemp_act  = float(bls_data.get("LNS14000000",{}).get("actual","0") or 0)
+        unemp_prev = float(bls_data.get("LNS14000000",{}).get("previous","0") or 0)
+        cpi_act    = float(bls_data.get("CUUR0000SA0",{}).get("actual","0") or 0)
+        cpi_prev   = float(bls_data.get("CUUR0000SA0",{}).get("previous","0") or 0)
+        nfp_act    = float(bls_data.get("CES0000000001",{}).get("actual","0") or 0)
+        nfp_prev   = float(bls_data.get("CES0000000001",{}).get("previous","0") or 0)
+        nfp_chg    = round(nfp_act - nfp_prev, 1)
+        claims_act = float(bls_data.get("ICSA",{}).get("actual","0") or 0)
+        claims_prev= float(bls_data.get("ICSA",{}).get("previous","0") or 0)
+        fallbacks = [
+            {"name":"Unemployment Rate","value":unemp_act,"prior":unemp_prev,"unit":"%","higher_is_bad":True,"kpi":True,"period":bls_data.get("LNS14000000",{}).get("period","")},
+            {"name":"CPI Index (MoM)","value":cpi_act,"prior":cpi_prev,"unit":"","higher_is_bad":True,"kpi":True,"period":bls_data.get("CUUR0000SA0",{}).get("period","")},
+            {"name":"Nonfarm Payrolls","value":nfp_chg,"prior":None,"unit":"K","higher_is_bad":False,"kpi":False,"period":""},
+            {"name":"Initial Jobless Claims","value":claims_act,"prior":claims_prev,"unit":"K","higher_is_bad":True,"kpi":False,"period":""},
+        ]
+        # Add yfinance-based indicators
+        try:
+            vix = yf.Ticker("^VIX").fast_info
+            fallbacks.append({"name":"VIX (Fear Index)","value":round(getattr(vix,"last_price",0),2),"prior":round(getattr(vix,"previous_close",0),2),"unit":"","higher_is_bad":True,"kpi":True,"period":"Live"})
+        except: pass
+        try:
+            t10 = round(getattr(yf.Ticker("^TNX").fast_info,"last_price",0),3)
+            t2  = round(getattr(yf.Ticker("^IRX").fast_info,"last_price",0),3)
+            fallbacks.append({"name":"10Y Treasury","value":t10,"prior":None,"unit":"%","higher_is_bad":False,"kpi":True,"period":"Live"})
+            fallbacks.append({"name":"10Y-2Y Spread","value":round(t10-t2,3),"prior":None,"unit":"%","higher_is_bad":False,"kpi":False,"period":"Live"})
+        except: pass
+        try:
+            dxy = round(getattr(yf.Ticker("DX-Y.NYB").fast_info,"last_price",0),2)
+            fallbacks.append({"name":"US Dollar Index","value":dxy,"prior":None,"unit":"","higher_is_bad":False,"kpi":False,"period":"Live"})
+        except: pass
+
+        for f in fallbacks:
+            chg = round(f["value"] - f["prior"], 3) if f.get("prior") and f["prior"] else None
+            f["change"] = chg
+        result = {"indicators": fallbacks, "source": "BLS / Yahoo Finance (add FRED_API_KEY to .env for full FRED data)"}
+        set_cache(key, result)
+        return result
+
+    # Full FRED fetch with API key
+    indicators = []
+    for series_id, name, unit, higher_is_bad, kpi in FRED_SERIES:
+        try:
+            # GDP needs 4 prior quarters to compute a true year-over-year change
+            limit = 5 if series_id == "GDPC1" else 2
+            url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={fred_key}&file_type=json&sort_order=desc&limit={limit}"
+            r = requests.get(url, timeout=10)
+            obs = r.json().get("observations", [])
+            # Filter out missing values
+            obs = [o for o in obs if o.get("value",".")!="."]
+            latest = float(obs[0]["value"]) if obs else None
+            prior  = float(obs[1]["value"]) if len(obs)>1 else None
+            period = obs[0].get("date","") if obs else ""
+            # GDP: report year-over-year real growth (vs 4 quarters ago), not QoQ
+            if series_id == "GDPC1":
+                if latest is not None and len(obs) >= 5:
+                    year_ago = float(obs[4]["value"])
+                    value = round((latest - year_ago) / year_ago * 100, 2) if year_ago else None
+                else:
+                    value = None
+                change = None
+                unit   = "%"
+            else:
+                value  = round(latest,3) if latest is not None else None
+                change = round(latest-prior,3) if latest is not None and prior is not None else None
+            indicators.append({"name":name,"value":value,"prior":round(prior,3) if prior else None,"change":change,"unit":unit,"higher_is_bad":higher_is_bad,"kpi":kpi,"period":period})
+        except Exception as e:
+            indicators.append({"name":name,"value":None,"prior":None,"change":None,"unit":unit,"higher_is_bad":higher_is_bad,"kpi":kpi,"period":""})
+
+    result = {"indicators": indicators, "source": "Federal Reserve Bank of St. Louis (FRED)"}
+    set_cache(key, result)
+    return result
+
+# ── MORNING BRIEF ────────────────────────────────────────────
+BRIEF_FUTURES = {"S&P 500 Futures":"ES=F","Nasdaq Futures":"NQ=F","Dow Futures":"YM=F","Russell 2000":"RTY=F"}
+BRIEF_INTL    = {"Nikkei 225":"^N225","Hang Seng":"^HSI","Shanghai":"000001.SS","FTSE 100":"^FTSE","DAX":"^GDAXI","CAC 40":"^FCHI"}
+BRIEF_RATES   = {"10Y Treasury":"^TNX","2Y Treasury":"^IRX","USD Index":"DX-Y.NYB","EUR/USD":"EURUSD=X","USD/JPY":"JPY=X","GBP/USD":"GBPUSD=X"}
+BRIEF_COMMS   = {"WTI Crude":"CL=F","Brent Crude":"BZ=F","Gold":"GC=F","Silver":"SI=F","Nat Gas":"NG=F","Bitcoin":"BTC-USD"}
+BRIEF_WATCHLIST = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","JPM","BAC","GS","WMT","HD","V","MA","UNH","LLY","XOM","CVX","PFE","MRK"]
+
+BRIEF_CALENDAR = {
+    0: [("8:30 AM ET","Fed Speaker"),("10:00 AM ET","ISM Manufacturing PMI")],
+    1: [("8:30 AM ET","Trade Balance"),("10:00 AM ET","JOLTS Job Openings"),("8:30 AM ET","PPI")],
+    2: [("8:15 AM ET","ADP Employment"),("8:30 AM ET","CPI"),("10:00 AM ET","ISM Services PMI"),("2:00 PM ET","FOMC Minutes / Decision")],
+    3: [("8:30 AM ET","Initial Jobless Claims"),("8:30 AM ET","Retail Sales"),("8:30 AM ET","Philly Fed")],
+    4: [("8:30 AM ET","Nonfarm Payrolls & Unemployment"),("8:30 AM ET","PCE Price Index"),("10:00 AM ET","UMich Sentiment")],
+}
+
+MORNING_CALL_PROMPT = """{context}
+
+You are a senior macro analyst writing the pre-market research brief for a sophisticated institutional audience. This brief lands at 6 AM CT, before the US open.
+
+Write Claude's Morning Call in four tight blocks — no filler, no hedging boilerplate:
+
+**THE OVERNIGHT PICTURE** (2–3 sentences)
+Synthesize the futures, Asia/Europe, and commodity moves into one coherent macro narrative.
+
+**3 THEMES TO WATCH TODAY**
+Numbered. Each: one bold headline phrase, then 1–2 sentences of substance.
+
+**WHAT COULD SURPRISE THE MARKET**
+One upside and one downside scenario. Two sentences each.
+
+**THE MORNING CALL**
+One crisp paragraph — your overall read on how the trading day sets up.
+
+Tone: confident, specific, analyst-grade. No disclaimers."""
+
+def _parallel(fn, items, workers=16):
+    """Run fn over items concurrently (yfinance calls are I/O-bound), preserving order."""
+    items = list(items)
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as ex:
+        return list(ex.map(fn, items))
+
+def _brief_fetch_group(tickers: dict) -> list:
+    def _one(item):
+        name, sym = item
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = getattr(fi, "last_price", None)
+            prev  = getattr(fi, "previous_close", None)
+            chg   = round((price - prev) / prev * 100, 2) if price and prev and prev != 0 else None
+            return {"name": name, "sym": sym, "price": round(price, 4) if price else None, "chg": chg}
+        except:
+            return {"name": name, "sym": sym, "price": None, "chg": None}
+    return _parallel(_one, tickers.items())
+
+EARNINGS_UNIVERSE = [
+    "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","JPM","BAC","GS",
+    "WMT","HD","V","MA","UNH","LLY","XOM","CVX","PFE","MRK","COST","NFLX",
+    "AMD","INTC","AVGO","ORCL","CRM","ADBE","QCOM","TXN","SBUX","NKE","DIS",
+    "PYPL","UBER","ABNB","HOOD","COIN","PLTR","SOFI","RIVN","F","GM",
+]
+
+@app.get("/morning-brief")
+def morning_brief():
+    key = "morning_brief"
+    data, hit = cached(key, ttl=1800)
+    if hit: return data
+
+    from datetime import datetime, date as dt_date, timedelta
+    import pytz
+    ct = pytz.timezone("America/Chicago")
+    now = datetime.now(ct)
+    now_et = now.astimezone(pytz.timezone("America/New_York"))
+    weekday = now.weekday()
+    today_str = now.strftime("%Y-%m-%d")
+
+    futures = _brief_fetch_group(BRIEF_FUTURES)
+    intl    = _brief_fetch_group(BRIEF_INTL)
+    rates   = _brief_fetch_group(BRIEF_RATES)
+    comms   = _brief_fetch_group(BRIEF_COMMS)
+
+    # ── Large-cap movers ─────────────────────────────────────────
+    def _mover(sym):
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = getattr(fi, "last_price", None)
+            prev  = getattr(fi, "previous_close", None)
+            if price and prev and prev != 0:
+                return {"symbol": sym, "price": round(price, 2), "chg": round((price-prev)/prev*100, 2)}
+        except:
+            pass
+        return None
+    movers = [m for m in _parallel(_mover, BRIEF_WATCHLIST) if m]
+    movers.sort(key=lambda x: x["chg"], reverse=True)
+    gainers = movers[:3]
+    losers  = sorted(movers, key=lambda x: x["chg"])[:3]
+
+    events = BRIEF_CALENDAR.get(weekday, [])
+
+    # ── VIX / Fear gauge ─────────────────────────────────────────
+    vix_data = {}
+    try:
+        vix_hist = yf.Ticker("^VIX").history(period="1y")["Close"]
+        current = round(float(vix_hist.iloc[-1]), 2)
+        pct = round(sum(1 for c in vix_hist if c < current) / len(vix_hist) * 100, 0)
+        prev_close = round(float(vix_hist.iloc[-2]), 2) if len(vix_hist) > 1 else current
+        chg = round(current - prev_close, 2)
+        regime = "High Fear" if current > 30 else "Elevated" if current > 20 else "Normal" if current > 15 else "Low / Complacent"
+        vix_data = {"current": current, "chg": chg, "percentile_1y": int(pct), "regime": regime}
+    except:
+        vix_data = {}
+
+    # ── Yield curve (2s/10s) ─────────────────────────────────────
+    yield_curve = {}
+    try:
+        t10 = yf.Ticker("^TNX").fast_info
+        t2  = yf.Ticker("^IRX").fast_info
+        y10 = round(getattr(t10, "last_price", 0), 3)
+        y2  = round(getattr(t2,  "last_price", 0), 3)
+        spread = round(y10 - y2, 3)
+        yield_curve = {
+            "y2": y2, "y10": y10, "spread": spread,
+            "shape": "Inverted" if spread < 0 else "Flat" if abs(spread) < 0.15 else "Normal",
+        }
+    except:
+        yield_curve = {}
+
+    # ── Sector snapshot ──────────────────────────────────────────
+    def _sector(item):
+        name, sym = item
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = getattr(fi, "last_price", None)
+            prev  = getattr(fi, "previous_close", None)
+            chg = round((price - prev) / prev * 100, 2) if price and prev and prev != 0 else None
+            return {"name": name, "sym": sym, "chg": chg}
+        except:
+            return {"name": name, "sym": sym, "chg": None}
+    sectors = _parallel(_sector, SECTOR_ETFS.items())
+    sectors.sort(key=lambda x: x["chg"] or 0, reverse=True)
+
+    # ── Pre-market movers ────────────────────────────────────────
+    def _premkt(sym):
+        try:
+            info = yf.Ticker(sym).info
+            pre_price  = info.get("preMarketPrice")
+            pre_chg    = info.get("preMarketChangePercent")
+            reg_price  = info.get("currentPrice") or info.get("regularMarketPrice")
+            name       = info.get("shortName", sym)
+            if pre_price and pre_chg is not None and abs(pre_chg) > 0.3:
+                return {
+                    "symbol": sym, "name": name[:22],
+                    "pre_price": round(pre_price, 2),
+                    "pre_chg": round(pre_chg, 2),
+                    "reg_price": round(reg_price, 2) if reg_price else None,
+                }
+        except:
+            pass
+        return None
+    premarket = [p for p in _parallel(_premkt, BRIEF_WATCHLIST) if p]
+    premarket.sort(key=lambda x: abs(x["pre_chg"]), reverse=True)
+    premarket = premarket[:6]
+
+    # ── Earnings today ───────────────────────────────────────────
+    # Session label is based on Eastern (NYSE) hours, not the CT clock
+    is_premarket = now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30)
+    def _earn(sym):
+        try:
+            t = yf.Ticker(sym)
+            cal = t.calendar
+            if cal is None:
+                return None
+            # calendar can be a dict or DataFrame
+            if isinstance(cal, dict):
+                earn_date = str(cal.get("Earnings Date", [""])[0])[:10] if cal.get("Earnings Date") else ""
+            else:
+                earn_date = str(cal.columns[0])[:10] if hasattr(cal, "columns") and len(cal.columns) else ""
+            if earn_date == today_str:
+                info = t.fast_info
+                price = getattr(info, "last_price", None)
+                return {
+                    "symbol": sym,
+                    "name": (t.info.get("shortName", sym))[:22],
+                    "price": round(price, 2) if price else None,
+                    "when": "Pre-Market" if is_premarket else "After Close",
+                }
+        except:
+            pass
+        return None
+    earnings_today = [e for e in _parallel(_earn, EARNINGS_UNIVERSE) if e]
+
+    # ── Analyst actions (upgrades/downgrades last 2 days) ────────
+    cutoff = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    def _analyst(sym):
+        out = []
+        try:
+            t = yf.Ticker(sym)
+            upg = t.upgrades_downgrades
+            if upg is None or upg.empty:
+                return out
+            upg = upg.reset_index()
+            upg["GradeDate"] = upg["GradeDate"].astype(str).str[:10]
+            recent = upg[upg["GradeDate"] >= cutoff]
+            for _, row in recent.head(2).iterrows():
+                action = str(row.get("Action", ""))
+                to_grade = str(row.get("ToGrade", ""))
+                from_grade = str(row.get("FromGrade", ""))
+                firm = str(row.get("Firm", ""))
+                if action and to_grade:
+                    out.append({
+                        "symbol": sym,
+                        "firm": firm[:20],
+                        "action": action,
+                        "from_grade": from_grade,
+                        "to_grade": to_grade,
+                        "date": str(row.get("GradeDate", "")),
+                    })
+        except:
+            pass
+        return out
+    analyst_syms = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","JPM","GS","UNH","LLY","XOM"]
+    analyst_actions = [a for grp in _parallel(_analyst, analyst_syms) for a in grp][:8]
+
+    # ── Build AI context ─────────────────────────────────────────
+    def fmt(rows):
+        return "\n".join(
+            f"  {r['name']}: {'${:.2f}'.format(r['price']) if r['price'] else 'N/A'} "
+            f"({('+' if (r['chg'] or 0) > 0 else '') + str(r['chg']) + '%' if r['chg'] is not None else 'N/A'})"
+            for r in rows
+        )
+
+    leaders_str  = ", ".join(f"{g['symbol']} {g['chg']:+.2f}%" for g in gainers)
+    laggards_str = ", ".join(f"{l['symbol']} {l['chg']:+.2f}%" for l in losers)
+    vix_str = f"VIX {vix_data.get('current','N/A')} ({vix_data.get('regime','')}, {vix_data.get('percentile_1y','?')}th percentile 1Y)" if vix_data else ""
+    yc_str  = f"Yield curve: 2Y {yield_curve.get('y2','?')}% / 10Y {yield_curve.get('y10','?')}% / Spread {yield_curve.get('spread','?')}bps ({yield_curve.get('shape','')})" if yield_curve else ""
+    sectors_str = " | ".join(f"{s['name']} {('+' if (s['chg'] or 0)>0 else '')}{s['chg']}%" for s in sectors if s['chg'] is not None)
+    earnings_str = ", ".join(f"{e['symbol']} ({e['when']})" for e in earnings_today) or "None confirmed"
+    premarket_str = ", ".join(f"{p['symbol']} {p['pre_chg']:+.2f}%" for p in premarket) or "No notable pre-market moves"
+    analyst_str = "; ".join(f"{a['firm']} {a['action']} {a['symbol']} → {a['to_grade']}" for a in analyst_actions) or "None"
+
+    context = (
+        f"Date: {now.strftime('%A, %B %d, %Y — %I:%M %p CT')}\n\n"
+        f"US Futures:\n{fmt(futures)}\n\n"
+        f"Intl Indices:\n{fmt(intl)}\n\n"
+        f"Rates/FX:\n{fmt(rates)}\n\n"
+        f"Commodities:\n{fmt(comms)}\n\n"
+        f"Volatility: {vix_str}\n"
+        f"Yield Curve: {yc_str}\n\n"
+        f"Sector Performance: {sectors_str}\n\n"
+        f"Pre-market movers: {premarket_str}\n"
+        f"Earnings today: {earnings_str}\n"
+        f"Analyst actions: {analyst_str}\n\n"
+        f"Large-cap leaders: {leaders_str}\n"
+        f"Large-cap laggards: {laggards_str}"
+    )
+
+    # ── Generate morning call ─────────────────────────────────────
+    morning_call = ""
+    prompt = MORNING_CALL_PROMPT.format(context=context)
+    try:
+        import anthropic
+        _ant = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resp = _ant.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        morning_call = resp.content[0].text
+    except Exception:
+        # Fall back to Groq/Llama if Anthropic is unavailable
+        try:
+            resp = ai_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                max_tokens=1200,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            morning_call = resp.choices[0].message.content
+        except Exception as e:
+            morning_call = f"Morning call unavailable: {e}"
+
+    result = {
+        "generated_at": now.strftime("%I:%M %p CT — %A, %B %d, %Y"),
+        "futures": futures,
+        "intl": intl,
+        "rates": rates,
+        "commodities": comms,
+        "gainers": gainers,
+        "losers": losers,
+        "events": [{"time": t, "release": r} for t, r in events],
+        "vix": vix_data,
+        "yield_curve": yield_curve,
+        "sectors": sectors,
+        "premarket": premarket,
+        "earnings_today": earnings_today,
+        "analyst_actions": analyst_actions,
+        "morning_call": morning_call,
+    }
+    set_cache(key, result)
+    return result
 
 # ── MOVERS ───────────────────────────────────────────────────
 @app.get("/movers")
@@ -1340,3 +1809,20 @@ def get_movers():
     gainers = sorted(results, key=lambda x: x["change"], reverse=True)[:5]
     losers  = sorted(results, key=lambda x: x["change"])[:5]
     return {"gainers": gainers, "losers": losers}
+
+# ── VALUE SCREENER ───────────────────────────────────────────
+@app.get("/valuation/{symbol}")
+def get_valuation(symbol: str):
+    """Run all 5 valuation methods (Buffett, Brandes, Pabrai, Hartz·Millsap·Hill,
+    Hempton Nutty) using SEC EDGAR financials + intraday yFinance data."""
+    key = f"valuation_{symbol.upper()}"
+    data, hit = cached(key, ttl=900)  # 15 min — EDGAR facts are heavy
+    if hit:
+        return data
+    try:
+        result = compute_valuation(symbol)
+    except Exception as e:
+        return {"error": f"Valuation failed: {e}"}
+    if "error" not in result:
+        set_cache(key, result)
+    return result

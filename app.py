@@ -1258,6 +1258,258 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Sidebar: Watchlist ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MORNING BRIEF  (rendered when nav == "Morning Brief")
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fetch_brief_group(tickers: dict) -> list:
+    rows = []
+    for name, sym in tickers.items():
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = getattr(fi, "last_price", None)
+            prev  = getattr(fi, "previous_close", None)
+            chg_pct = (price - prev) / prev * 100 if price and prev and prev != 0 else None
+        except Exception:
+            price = chg_pct = None
+        rows.append({"name": name, "sym": sym, "price": price, "chg_pct": chg_pct})
+    return rows
+
+def _brief_table_html(rows: list, price_fmt: str = "${:.2f}") -> str:
+    html = (
+        '<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;font-size:13px;">'
+        '<thead><tr>'
+        '<th style="text-align:left;padding:6px 10px;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #e2e8f0;">Name</th>'
+        '<th style="text-align:right;padding:6px 10px;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #e2e8f0;">Price</th>'
+        '<th style="text-align:right;padding:6px 10px;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #e2e8f0;">Change</th>'
+        '</tr></thead><tbody>'
+    )
+    for r in rows:
+        p = price_fmt.format(r["price"]) if r["price"] else "N/A"
+        if r["chg_pct"] is not None:
+            color = "#22c55e" if r["chg_pct"] >= 0 else "#ef4444"
+            arrow = "▲" if r["chg_pct"] >= 0 else "▼"
+            chg   = f'{arrow} {r["chg_pct"]:+.2f}%'
+        else:
+            color, chg = "#94a3b8", "—"
+        html += (
+            f'<tr style="border-bottom:1px solid #f1f5f9;">'
+            f'<td style="padding:7px 10px;color:#1e3a5c;font-weight:500;">{r["name"]}</td>'
+            f'<td style="padding:7px 10px;text-align:right;color:#334155;">{p}</td>'
+            f'<td style="padding:7px 10px;text-align:right;color:{color};font-weight:600;">{chg}</td>'
+            f'</tr>'
+        )
+    return html + "</tbody></table>"
+
+_BRIEF_FUTURES = {
+    "S&P 500 Futures": "ES=F", "Nasdaq Futures": "NQ=F",
+    "Dow Futures": "YM=F",     "Russell 2000 Fut": "RTY=F",
+}
+_BRIEF_INTL = {
+    "Nikkei 225":  "^N225",    "Hang Seng": "^HSI",
+    "Shanghai":    "000001.SS","FTSE 100":  "^FTSE",
+    "DAX":         "^GDAXI",   "CAC 40":    "^FCHI",
+}
+_BRIEF_RATES = {
+    "10Y Treasury": "^TNX",   "2Y Treasury":   "^IRX",
+    "USD Index":    "DX-Y.NYB","EUR/USD":       "EURUSD=X",
+    "USD/JPY":      "JPY=X",   "GBP/USD":       "GBPUSD=X",
+}
+_BRIEF_COMMS = {
+    "WTI Crude": "CL=F",   "Brent Crude": "BZ=F",
+    "Gold":      "GC=F",   "Silver":      "SI=F",
+    "Nat Gas":   "NG=F",   "Bitcoin":     "BTC-USD",
+}
+_BRIEF_CALENDAR = {
+    0: [("8:30 AM ET","Fed Speaker (check calendar)"),("10:00 AM ET","ISM Manufacturing PMI")],
+    1: [("8:30 AM ET","Trade Balance"),("10:00 AM ET","JOLTS Job Openings"),("8:30 AM ET","PPI")],
+    2: [("8:15 AM ET","ADP Employment"),("8:30 AM ET","CPI"),("10:00 AM ET","ISM Services PMI"),("2:00 PM ET","FOMC Minutes / Decision")],
+    3: [("8:30 AM ET","Initial Jobless Claims"),("8:30 AM ET","Retail Sales"),("8:30 AM ET","Philly Fed")],
+    4: [("8:30 AM ET","Nonfarm Payrolls & Unemployment"),("8:30 AM ET","PCE Price Index"),("10:00 AM ET","UMich Sentiment")],
+}
+_LARGE_CAP_WATCH = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","JPM","BAC","GS","WMT","HD","V","MA","UNH","LLY","XOM","CVX","PFE","MRK"]
+
+_MORNING_CALL_PROMPT = """{context}
+
+You are a senior macro analyst writing the pre-market research brief for a sophisticated institutional audience. This brief lands at 6 AM CT, before the US open.
+
+Write Claude's Morning Call in four tight blocks — no filler, no hedging boilerplate:
+
+**THE OVERNIGHT PICTURE** (2–3 sentences)
+Synthesize the futures, Asia/Europe, and commodity moves into one coherent macro narrative.
+
+**3 THEMES TO WATCH TODAY**
+Numbered. Each: one bold headline phrase, then 1–2 sentences of substance.
+
+**WHAT COULD SURPRISE THE MARKET**
+One upside and one downside scenario. Two sentences each.
+
+**THE MORNING CALL**
+One crisp paragraph — your overall read on how the trading day sets up.
+
+Tone: confident, specific, analyst-grade. No disclaimers."""
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_brief_data():
+    """Cache market data for 30 min to avoid hammering yfinance on every render."""
+    futures = _fetch_brief_group(_BRIEF_FUTURES)
+    intl    = _fetch_brief_group(_BRIEF_INTL)
+    rates   = _fetch_brief_group(_BRIEF_RATES)
+    comms   = _fetch_brief_group(_BRIEF_COMMS)
+
+    movers = []
+    for sym in _LARGE_CAP_WATCH:
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = getattr(fi, "last_price", None)
+            prev  = getattr(fi, "previous_close", None)
+            if price and prev and prev != 0:
+                movers.append({"symbol": sym, "price": price, "chg_pct": (price-prev)/prev*100})
+        except Exception:
+            pass
+    movers.sort(key=lambda x: x["chg_pct"], reverse=True)
+    return futures, intl, rates, comms, movers[:3], sorted(movers, key=lambda x: x["chg_pct"])[:3]
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_morning_call_text(ctx_key: str, context: str) -> str:
+    """Cache the AI narrative for 30 min (ctx_key forces refresh on new data)."""
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    groq_key      = os.environ.get("GROQ_API_KEY")
+    prompt = _MORNING_CALL_PROMPT.format(context=context)
+    try:
+        import anthropic as _ant
+        c = _ant.Anthropic(api_key=anthropic_key)
+        r = c.messages.create(model="claude-opus-4-8", max_tokens=900,
+                              messages=[{"role":"user","content":prompt}])
+        return r.content[0].text
+    except Exception:
+        pass
+    try:
+        from groq import Groq
+        r = Groq(api_key=groq_key).chat.completions.create(
+            model="llama-3.3-70b-versatile", max_tokens=900,
+            messages=[{"role":"user","content":prompt}])
+        return r.choices[0].message.content
+    except Exception as e:
+        return f"*Morning call unavailable: {e}*"
+
+def _render_morning_brief():
+    from zoneinfo import ZoneInfo
+    ct_now = datetime.now(ZoneInfo("America/Chicago"))
+
+    st.markdown(
+        f'<div style="padding:8px 0 16px;">'
+        f'<span style="color:#1e3a5c;font-size:18px;font-weight:800;">◆ Morning Research Brief</span>'
+        f'<span style="color:#94a3b8;font-size:13px;margin-left:12px;">{ct_now.strftime("%A, %B %d, %Y")}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("Fetching market data…"):
+        futures, intl, rates, comms, gainers, losers = _get_brief_data()
+
+    # ── Overnight Wrap ────────────────────────────────────────────────────────
+    st.markdown("#### 1 · Overnight Market Wrap")
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        st.markdown("**US Futures**")
+        st.markdown(_brief_table_html(futures), unsafe_allow_html=True)
+        st.markdown("<br>**Rates & FX**", unsafe_allow_html=True)
+        st.markdown(_brief_table_html(rates, "${:.4f}"), unsafe_allow_html=True)
+    with c2:
+        st.markdown("**Asia / Europe**")
+        st.markdown(_brief_table_html(intl, "{:,.2f}"), unsafe_allow_html=True)
+        st.markdown("<br>**Commodities & Crypto**", unsafe_allow_html=True)
+        st.markdown(_brief_table_html(comms), unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color:#e2e8f0;margin:16px 0;'>", unsafe_allow_html=True)
+
+    # ── Economic Events ───────────────────────────────────────────────────────
+    st.markdown("#### 2 · Key Economic Events Today")
+    events = _BRIEF_CALENDAR.get(ct_now.weekday(), [])
+    if events:
+        rows_html = "".join(
+            f'<tr style="border-bottom:1px solid #f1f5f9;">'
+            f'<td style="padding:7px 10px;color:#64748b;font-size:12px;white-space:nowrap;">{t}</td>'
+            f'<td style="padding:7px 10px;color:#1e3a5c;font-weight:500;font-size:13px;">{r}</td>'
+            f'</tr>'
+            for t, r in events
+        )
+        st.markdown(
+            '<table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;">'
+            '<thead><tr>'
+            '<th style="text-align:left;padding:6px 10px;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #e2e8f0;width:160px;">Time (ET)</th>'
+            '<th style="text-align:left;padding:6px 10px;color:#94a3b8;font-size:10px;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #e2e8f0;">Release</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("No major scheduled releases today.")
+
+    st.markdown("<hr style='border-color:#e2e8f0;margin:16px 0;'>", unsafe_allow_html=True)
+
+    # ── Large-Cap Movers ──────────────────────────────────────────────────────
+    st.markdown("#### 3 · Large-Cap Movers")
+    mc1, mc2 = st.columns(2, gap="medium")
+
+    def _mover_card(sym, price, chg_pct, is_up):
+        color = "#22c55e" if is_up else "#ef4444"
+        arrow = "▲" if is_up else "▼"
+        return (
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:8px 12px;border-radius:6px;border:1px solid #e2e8f0;margin-bottom:6px;">'
+            f'<span style="color:#1e3a5c;font-weight:700;font-size:14px;">{sym}</span>'
+            f'<span style="color:#64748b;font-size:13px;">${price:,.2f}</span>'
+            f'<span style="color:{color};font-weight:700;font-size:13px;">{arrow} {chg_pct:+.2f}%</span>'
+            f'</div>'
+        )
+
+    with mc1:
+        st.markdown("**Leaders**")
+        for g in gainers:
+            st.markdown(_mover_card(g["symbol"], g["price"], g["chg_pct"], True), unsafe_allow_html=True)
+    with mc2:
+        st.markdown("**Laggards**")
+        for l in losers:
+            st.markdown(_mover_card(l["symbol"], l["price"], l["chg_pct"], False), unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color:#e2e8f0;margin:16px 0;'>", unsafe_allow_html=True)
+
+    # ── Claude's Morning Call ─────────────────────────────────────────────────
+    st.markdown("#### 4 · Claude's Morning Call")
+
+    def _build_ctx(futures, intl, rates, comms, gainers, losers):
+        lines = [f"Date: {ct_now.strftime('%A, %B %d, %Y')} — {ct_now.strftime('%I:%M %p CT')}"]
+        for label, rows in [("US Futures", futures), ("Intl Indices", intl), ("Rates/FX", rates), ("Commodities", comms)]:
+            lines.append(f"\n{label}:")
+            for r in rows:
+                p = f"${r['price']:.2f}" if r["price"] else "N/A"
+                c = f"{r['chg_pct']:+.2f}%" if r["chg_pct"] is not None else "N/A"
+                lines.append(f"  {r['name']} ({r['sym']}): {p}  {c}")
+        lines.append("\nLeaders: " + ", ".join(f"{g['symbol']} {g['chg_pct']:+.2f}%" for g in gainers))
+        lines.append("Laggards: " + ", ".join(f"{l['symbol']} {l['chg_pct']:+.2f}%" for l in losers))
+        return "\n".join(lines)
+
+    context = _build_ctx(futures, intl, rates, comms, gainers, losers)
+    ctx_key = f"{ct_now.strftime('%Y%m%d%H')}"
+
+    with st.spinner("Generating Morning Call…"):
+        call_text = _get_morning_call_text(ctx_key, context)
+
+    st.markdown(
+        f'<div style="background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;padding:20px 24px;'
+        f'font-family:Inter,sans-serif;font-size:14px;line-height:1.7;color:#334155;">'
+        f'{call_text.replace(chr(10), "<br>")}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f'<p style="color:#94a3b8;font-size:11px;margin-top:10px;">Data refreshes every 30 min · Generated {ct_now.strftime("%I:%M %p CT")}</p>',
+        unsafe_allow_html=True,
+    )
+
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("<p style='color:#5a7a99; font-size:10px; font-weight:600; letter-spacing:0.16em; text-transform:uppercase; font-family:Inter,sans-serif;'>Watchlist</p>", unsafe_allow_html=True)
     st.markdown("<p style='color:#94a3b8; font-size:11px; margin:-4px 0 10px;'>Add stocks via the company profile.</p>", unsafe_allow_html=True)
@@ -1400,7 +1652,24 @@ def render_market_strip():
 
 render_market_strip()
 
+st.markdown("<hr style='border-color:#e2e8f0; margin:4px 0 8px;'>", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL NAV
+# ══════════════════════════════════════════════════════════════════════════════
+_nav = st.radio(
+    "nav",
+    ["Dashboard", "Morning Brief"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_nav",
+)
+
 st.markdown("<hr style='border-color:#e2e8f0; margin:4px 0 16px;'>", unsafe_allow_html=True)
+
+if _nav == "Morning Brief":
+    _render_morning_brief()
+    st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TWO-COLUMN LAYOUT
