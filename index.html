@@ -550,6 +550,7 @@
         <input id="search-input" type="text" placeholder="TICKER..." maxlength="12"/>
         <button id="search-btn" onclick="search()">GO</button>
         <div class="period-btns">
+          <button class="period-btn" onclick="setPeriod('1d',this)">1D</button>
           <button class="period-btn" onclick="setPeriod('5d',this)">5D</button>
           <button class="period-btn active" onclick="setPeriod('1mo',this)">1M</button>
           <button class="period-btn" onclick="setPeriod('3mo',this)">3M</button>
@@ -1914,7 +1915,13 @@ function setPeriod(p, btn) {
   currentPeriod = p;
   document.querySelectorAll(".period-btn").forEach(b=>b.classList.remove("active"));
   btn.classList.add("active");
-  if (currentSymbol) loadHistory(currentSymbol);
+  if (!currentSymbol) return;
+  // Refresh whichever chart panel is showing: the Chart tab (line/candle) or Overview.
+  if (document.getElementById("panel-chart").classList.contains("active")) {
+    renderCharts2();
+  } else {
+    loadHistory(currentSymbol);
+  }
 }
 
 // TABS
@@ -2035,8 +2042,19 @@ async function loadStock(symbol) {
   }
 }
 
+// 1D shows intraday 5-minute bars; every other range uses daily bars.
+function histQuery() {
+  return currentPeriod === "1d" ? "?period=1d&interval=5m" : `?period=${currentPeriod}`;
+}
+
+// Daily bars label by date; intraday bars (ISO like 2026-06-15T09:30:00) label by HH:MM.
+function chartLabels(dates) {
+  if (dates.length && /[T ]\d\d:\d\d/.test(dates[0])) return dates.map(d => d.slice(11, 16));
+  return dates;
+}
+
 async function loadHistory(symbol) {
-  const hist = await fetch(`${API}/history/${symbol}?period=${currentPeriod}`).then(r=>r.json());
+  const hist = await fetch(`${API}/history/${symbol}${histQuery()}`).then(r=>r.json());
   renderCharts(hist);
 }
 
@@ -2055,12 +2073,13 @@ function renderCharts(hist) {
   if(volChart) volChart.destroy();
   const up=hist.close[hist.close.length-1]>=hist.close[0];
   const color=up?"#00d084":"#ff3b3b";
+  const labels=chartLabels(hist.dates);
   priceChart=new Chart(document.getElementById("price-chart").getContext("2d"),{
-    type:"line",data:{labels:hist.dates,datasets:[{data:hist.close,borderColor:color,backgroundColor:color+"15",fill:true,tension:0.3,pointRadius:0,borderWidth:2}]},
+    type:"line",data:{labels,datasets:[{data:hist.close,borderColor:color,backgroundColor:color+"15",fill:true,tension:0.3,pointRadius:0,borderWidth:2}]},
     options:{...chartOpts}
   });
   volChart=new Chart(document.getElementById("vol-chart").getContext("2d"),{
-    type:"bar",data:{labels:hist.dates,datasets:[{data:hist.volume,backgroundColor:hist.close.map((c,i)=>i===0?"#555":c>=hist.close[i-1]?"#00d08444":"#ff3b3b44"),borderWidth:0}]},
+    type:"bar",data:{labels,datasets:[{data:hist.volume,backgroundColor:hist.close.map((c,i)=>i===0?"#555":c>=hist.close[i-1]?"#00d08444":"#ff3b3b44"),borderWidth:0}]},
     options:{plugins:{legend:{display:false}},scales:{x:{ticks:{display:false},grid:{display:false}},y:{ticks:{color:"#555",font:{size:9},callback:v=>v>=1e6?`${(v/1e6).toFixed(0)}M`:v},grid:{color:"#1a1a1a"},position:"right"}},animation:{duration:400}}
   });
 }
@@ -2523,11 +2542,18 @@ function togglePanel(name, btn) {
 
 async function renderCharts2() {
   if(!currentSymbol) return;
-  const indPeriod = ["5d","1mo"].includes(currentPeriod) ? "3mo" : currentPeriod;
-  const [hist, indicators] = await Promise.all([
-    fetch(`${API}/history/${currentSymbol}?period=${currentPeriod}`).then(r=>r.json()),
-    fetch(`${API}/indicators/${currentSymbol}?period=${indPeriod}`).then(r=>r.json()),
-  ]);
+  let hist, indicators;
+  if(currentPeriod === "1d") {
+    // Intraday view — daily moving-average indicators don't apply to a single day.
+    hist = await fetch(`${API}/history/${currentSymbol}${histQuery()}`).then(r=>r.json());
+    indicators = {};
+  } else {
+    const indPeriod = ["5d","1mo"].includes(currentPeriod) ? "3mo" : currentPeriod;
+    [hist, indicators] = await Promise.all([
+      fetch(`${API}/history/${currentSymbol}${histQuery()}`).then(r=>r.json()),
+      fetch(`${API}/indicators/${currentSymbol}?period=${indPeriod}`).then(r=>r.json()),
+    ]);
+  }
   lastHistData=hist;
   lastIndicatorData=indicators;
   renderAdvancedChart(indicators, hist);
@@ -2535,10 +2561,10 @@ async function renderCharts2() {
   if(volChart2) volChart2.destroy();
   volChart2=new Chart(document.getElementById("vol-chart2").getContext("2d"),{
     type:"bar",
-    data:{labels:hist.dates,datasets:[{data:hist.volume,backgroundColor:hist.close.map((c,i)=>i===0?"#555":c>=hist.close[i-1]?"#00d08444":"#ff3b3b44"),borderWidth:0}]},
+    data:{labels:chartLabels(hist.dates),datasets:[{data:hist.volume,backgroundColor:hist.close.map((c,i)=>i===0?"#555":c>=hist.close[i-1]?"#00d08444":"#ff3b3b44"),borderWidth:0}]},
     options:{plugins:{legend:{display:false}},scales:{x:{ticks:{display:false},grid:{display:false}},y:{ticks:{color:"#555",font:{size:9},callback:v=>v>=1e6?`${(v/1e6).toFixed(0)}M`:v},grid:{color:"#1a1a1a"},position:"right"}},animation:{duration:300}}
   });
-  if(activePanels.rsi || activePanels.macd) renderSubCharts(indicators);
+  if((activePanels.rsi || activePanels.macd) && indicators.rsi) renderSubCharts(indicators);
 }
 
 function renderAdvancedChart(ind, hist) {
@@ -2594,7 +2620,7 @@ function renderAdvancedChart(ind, hist) {
         responsive:true,
         plugins:{legend:{display:false}},
         scales:{
-          x:{type:"time",time:{unit:"day"},ticks:{color:"#555",maxTicksLimit:10,font:{size:10}},grid:{color:"#1a1a1a"}},
+          x:{type:"time",ticks:{color:"#555",maxTicksLimit:10,font:{size:10}},grid:{color:"#1a1a1a"}},
           y:{ticks:{color:"#555",font:{size:10}},grid:{color:"#1a1a1a"},position:"right"}
         },
         animation:{duration:400}
@@ -2613,7 +2639,7 @@ function renderAdvancedChart(ind, hist) {
 
   advancedChart = new Chart(document.getElementById("advanced-chart").getContext("2d"),{
     type:"line",
-    data:{labels:dates, datasets},
+    data:{labels:chartLabels(dates), datasets},
     options:{
       responsive:true,
       interaction:{mode:"index",intersect:false},

@@ -365,14 +365,22 @@ def get_stock(symbol: str):
 
 # ── HISTORY ──────────────────────────────────────────────────
 @app.get("/history/{symbol}")
-def get_history(symbol: str, period: str = "1mo"):
-    key = f"history_{symbol}_{period}"
+def get_history(symbol: str, period: str = "1mo", interval: str = ""):
+    key = f"history_{symbol}_{period}_{interval}"
     data, hit = cached(key, ttl=60)
     if hit: return data
     ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period)
+    if interval:
+        hist = ticker.history(period=period, interval=interval)
+        if hist.empty:  # e.g. 1d/5m on a weekend/holiday — fall back to recent intraday
+            hist = ticker.history(period="5d", interval="15m")
+    else:
+        hist = ticker.history(period=period)
+    # Intraday bars need date+time (ISO so the browser parses it); daily bars just the date.
+    intraday = bool(interval) and interval[-1] in ("m", "h")
+    date_fmt = "%Y-%m-%dT%H:%M:%S" if intraday else "%Y-%m-%d"
     result = {
-        "dates": hist.index.strftime("%Y-%m-%d").tolist(),
+        "dates": hist.index.strftime(date_fmt).tolist(),
         "close": hist["Close"].round(2).tolist(),
         "open": hist["Open"].round(2).tolist(),
         "high": hist["High"].round(2).tolist(),
