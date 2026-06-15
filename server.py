@@ -594,8 +594,120 @@ BLS_SERIES = {
     "Initial Jobless Claims":             "ICSA",
 }
 
+# FRED series + how to turn each into the calendar's HEADLINE number.
+#   rate    → value is already a % (e.g. Unemployment 4.3%)
+#   qoq     → value is already a % (GDP, annualized quarter-over-quarter)
+#   mom_pct → month-over-month % change of an index (CPI, Core CPI, PPI, Retail Sales)
+#   chg_k   → month-over-month change in thousands (Non-Farm Payrolls)
+#   level_k → the value itself, expressed in thousands (Initial Jobless Claims)
+FRED_CALENDAR = {
+    "Non-Farm Payrolls":              ("PAYEMS",          "chg_k"),
+    "Unemployment Rate":              ("UNRATE",          "rate"),
+    "CPI (Consumer Price Index) MoM": ("CPIAUCSL",        "mom_pct"),
+    "Core CPI MoM":                   ("CPILFESL",        "mom_pct"),
+    "PPI (Producer Price Index) MoM": ("PPIFIS",          "mom_pct"),
+    "Retail Sales MoM":               ("RSAFS",           "mom_pct"),
+    "Initial Jobless Claims":         ("ICSA",            "level_k"),
+    "GDP Growth Rate QoQ (Advance)":  ("A191RL1Q225SBEA", "qoq"),
+}
+
+
+def _fred_series_values(series_id, api_key, n=3):
+    """The n most recent valid observation values for a FRED series, newest first."""
+    r = requests.get(
+        "https://api.stlouisfed.org/fred/series/observations",
+        params={"series_id": series_id, "api_key": api_key, "file_type": "json",
+                "sort_order": "desc", "limit": n + 4},
+        timeout=12,
+    )
+    r.raise_for_status()
+    out = []
+    for o in r.json().get("observations", []):
+        v = o.get("value", ".")
+        if v not in (".", "", None):
+            try:
+                out.append(float(v))
+            except ValueError:
+                pass
+        if len(out) >= n:
+            break
+    return out
+
+
+def _fred_headline(series_id, transform, api_key):
+    """Return (latest, previous) headline strings for one indicator, or ('', '')."""
+    v = _fred_series_values(series_id, api_key, n=3)
+
+    def fmt(i):
+        # headline for the reading at index i (i+1 is its prior period for change/% maths)
+        if i >= len(v):
+            return ""
+        cur = v[i]
+        if transform == "rate":
+            return f"{cur:.1f}%"
+        if transform == "qoq":
+            return f"{cur:+.1f}%"
+        if transform == "level_k":
+            return f"{cur / 1000:.0f}K"
+        if i + 1 >= len(v):
+            return ""
+        prior = v[i + 1]
+        if transform == "chg_k":
+            return f"{cur - prior:+,.0f}K"
+        if transform == "mom_pct":
+            return f"{(cur / prior - 1) * 100:+.1f}%" if prior else ""
+        return ""
+
+    return fmt(0), fmt(1)
+
+
+def _enrich_calendar_with_fred(events, api_key):
+    """Fill in actual (on the most recent past release) and previous (last reading) for
+    events we have a FRED series for. Upcoming events get previous only — no actual."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    # the most recent PAST occurrence of each indicator is the one that just released
+    latest_past = {}
+    for e in events:
+        t = e["title"]
+        if t in FRED_CALENDAR and e["date"] < today:
+            if t not in latest_past or e["date"] > latest_past[t]:
+                latest_past[t] = e["date"]
+    headlines = {}
+    for e in events:
+        t = e["title"]
+        if t not in FRED_CALENDAR:
+            continue
+        if t not in headlines:
+            sid, transform = FRED_CALENDAR[t]
+            headlines[t] = _fred_headline(sid, transform, api_key)
+        latest, prev = headlines[t]
+        if e["date"] >= today:
+            e["previous"] = latest                    # last released reading
+        elif e["date"] == latest_past.get(t):
+            e["actual"], e["previous"] = latest, prev  # the released number + the one before
+        # older past occurrences stay blank (avoid mismatching the wrong release)
+
+
 @app.get("/economic-calendar")
 def get_economic_calendar():
+    data, hit = cached("economic_calendar", ttl=1800)
+    if hit:
+        return data
+    result = _generated_economic_calendar()
+    # Free enrichment: FRED gives accurate previous + actual. (Consensus forecasts have
+    # no free source, so the forecast column stays blank.)
+    fred_key = os.getenv("FRED_API_KEY", "")
+    if fred_key:
+        try:
+            _enrich_calendar_with_fred(result, fred_key)
+        except Exception as e:
+            print(f"[econ-cal] FRED enrich failed: {e}")
+    set_cache("economic_calendar", result)
+    return result
+
+
+def _generated_economic_calendar():
     from datetime import datetime, timedelta
     import calendar
 
@@ -694,33 +806,12 @@ def get_economic_calendar():
         except:
             pass
 
-    # Fetch real BLS data for actual + previous values
-    bls_data = fetch_bls_series(list(BLS_SERIES.values()))
-    series_lookup = {v: k for k, v in BLS_SERIES.items()}
+    # Numbers are filled in by _enrich_calendar_with_fred() when a FRED key is set;
+    # without one, events show schedule + impact only.
 
-    # Attach actual/previous to matching events
-    for e in events:
-        title = e["title"]
-        if title in BLS_SERIES:
-            sid = BLS_SERIES[title]
-            if sid in bls_data:
-                d = bls_data[sid]
-                # Format nicely based on indicator type
-                if "Payroll" in title:
-                    actual = f"{float(d['actual']):,.0f}K" if d['actual'] else ""
-                    prev   = f"{float(d['previous']):,.0f}K" if d['previous'] else ""
-                elif "Rate" in title or "MoM" in title or "PMI" in title:
-                    actual = f"{d['actual']}%" if d['actual'] else ""
-                    prev   = f"{d['previous']}%" if d['previous'] else ""
-                else:
-                    actual = d['actual']
-                    prev   = d['previous']
-                e["actual"]   = actual
-                e["previous"] = prev
-
-    # Sort and filter to upcoming events only
-    today_str = today.strftime("%Y-%m-%d")
-    upcoming = [e for e in events if e["date"] >= today_str]
+    # Keep a short look-back so a just-released event can show its actual, plus all upcoming.
+    cutoff = (today - timedelta(days=8)).strftime("%Y-%m-%d")
+    upcoming = [e for e in events if e["date"] >= cutoff]
     upcoming = sorted(upcoming, key=lambda x: (x["date"], x["time"]))
 
     # Deduplicate

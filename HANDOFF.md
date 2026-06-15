@@ -38,13 +38,18 @@ If you only do one thing from this document, do this.
 
 ## The API keys (the site needs these to work)
 
-The app uses two paid AI/data keys. They are **not** stored in the code (on purpose).
-They live in the Render dashboard under the service's **Environment** tab:
+The app uses these API keys. They are **not** stored in the code (on purpose). They live
+in the Render dashboard under the service's **Environment** tab:
 
-| Key | What it powers | Where to get a replacement |
-| --- | --- | --- |
-| `GROQ_API_KEY` | The AI chat assistant | https://console.groq.com (free tier available) |
-| `ANTHROPIC_API_KEY` | The deeper AI analysis | https://console.anthropic.com |
+| Key | What it powers | Required? | Where to get one |
+| --- | --- | --- | --- |
+| `GROQ_API_KEY` | The AI chat assistant | Yes | https://console.groq.com (free tier) |
+| `ANTHROPIC_API_KEY` | The deeper AI analysis | Yes | https://console.anthropic.com |
+| `FRED_API_KEY` | Previous / actual numbers on the Economic Calendar | Optional | https://fredaccount.stlouisfed.org (free, instant) |
+
+Without `FRED_API_KEY`, the Economic Calendar still shows the upcoming schedule — it just
+leaves the number columns blank. (Consensus *forecasts* aren't available from any free
+source, so the forecast column stays blank regardless.)
 
 The keys currently in use belong to the intern's personal accounts. **After the intern
 leaves, the company should create its own keys** at the links above and paste them into
@@ -60,8 +65,8 @@ working once the intern's accounts are closed.
 3. Click **New → Blueprint**.
 4. Connect the GitHub repo and select it. Render automatically finds `render.yaml` in
    the repo and sets everything up — build command, start command, Python version.
-5. Render will prompt for the two secret values: paste in `GROQ_API_KEY` and
-   `ANTHROPIC_API_KEY`.
+5. Render will prompt for the secret values: paste in `GROQ_API_KEY` and
+   `ANTHROPIC_API_KEY` (and optionally `FRED_API_KEY` for the calendar's numbers).
 6. Click **Apply / Create**. First build takes a few minutes. When it finishes, Render
    shows a URL like `https://bloomberg-terminal.onrender.com` — that's the live site.
    Send that link to whoever needs it.
