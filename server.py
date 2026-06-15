@@ -1287,18 +1287,29 @@ def portfolio_quotes(symbols: str = ""):
 # ── INTRADAY CHART ───────────────────────────────────────────
 @app.get("/intraday/{symbol}")
 def get_intraday(symbol: str, interval: str = "5m"):
+    # Short cache so the chart's ~20s live polling (and multiple viewers) share one
+    # Yahoo fetch instead of each hammering it — keeps the data fresh but the load low.
+    key = f"intraday_{symbol}_{interval}"
+    data, hit = cached(key, ttl=15)
+    if hit:
+        return data
     ticker = yf.Ticker(symbol)
     hist = ticker.history(period="1d", interval=interval)
     if hist.empty:
         hist = ticker.history(period="5d", interval="15m")
-    return {
+    result = {
         "times":  hist.index.strftime("%H:%M").tolist(),
+        # epoch ms per bar — candlesticks need a real time axis (HH:MM strings would
+        # collide across days in the 5d fallback). tz-aware → timestamp() is UTC-correct.
+        "epoch":  [int(ts.timestamp() * 1000) for ts in hist.index],
         "close":  hist["Close"].round(2).tolist(),
         "open":   hist["Open"].round(2).tolist(),
         "high":   hist["High"].round(2).tolist(),
         "low":    hist["Low"].round(2).tolist(),
         "volume": hist["Volume"].tolist(),
     }
+    set_cache(key, result)
+    return result
 
 # ── MULTI SECURITY COMPARISON ────────────────────────────────
 @app.get("/compare")

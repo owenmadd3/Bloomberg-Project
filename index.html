@@ -3283,7 +3283,7 @@ document.addEventListener("keydown", e=>{
 });
 
 // ── INTRADAY ──────────────────────────────────────────────────
-let intradayChart=null, intradayVolChart=null, intradayInterval="5m";
+let intradayChart=null, intradayVolChart=null, intradayInterval="5m", intradayTimer=null;
 
 function setIntradayInterval(interval, btn) {
   intradayInterval = interval;
@@ -3295,11 +3295,25 @@ function setIntradayInterval(interval, btn) {
 async function loadIntraday() {
   const sym = (document.getElementById("intraday-sym").value.trim() || currentSymbol || "SPY").toUpperCase();
   document.getElementById("intraday-sym").value = sym;
+  stopIntradayLive();                 // reset any prior timer (symbol/interval change)
+  await refreshIntraday(sym, true);    // true = build charts fresh
+  startIntradayLive(sym);              // begin near-live polling
+}
+
+// Shape the intraday payload into Chart.js financial points (epoch-ms x-values).
+function _intraCandles(d){ return d.epoch.map((t,i)=>({x:t,o:d.open[i],h:d.high[i],l:d.low[i],c:d.close[i]})); }
+function _intraVols(d){ return d.epoch.map((t,i)=>({x:t,y:d.volume[i]})); }
+function _intraVolColors(d){ return d.close.map((c,i)=> i===0?"#555": c>=d.close[i-1]?"#00d08444":"#ff3b3b44"); }
+
+// rebuild=true creates the charts; rebuild=false mutates data in place for a smooth
+// live tick (no flicker, keeps the candlestick/volume canvases stable).
+async function refreshIntraday(sym, rebuild){
   try {
     const [data, info] = await Promise.all([
       fetch(`${API}/intraday/${sym}?interval=${intradayInterval}`).then(r=>r.json()),
       fetch(`${API}/stock/${sym}`).then(r=>r.json()),
     ]);
+    if(!data.epoch || !data.epoch.length) return;
 
     document.getElementById("intraday-stats").innerHTML = `
       <div class="stat-box"><div class="s-label">${sym}</div><div class="s-val">$${info.price}</div></div>
@@ -3309,24 +3323,64 @@ async function loadIntraday() {
       <div class="stat-box"><div class="s-label">Low</div><div class="s-val">$${info.day_low}</div></div>
       <div class="stat-box"><div class="s-label">Volume</div><div class="s-val">${info.volume?(info.volume/1e6).toFixed(1)+'M':''}</div></div>`;
 
-    const up = data.close[data.close.length-1] >= data.close[0];
-    const color = up ? "#00d084" : "#ff3b3b";
+    const candles = _intraCandles(data);
+    const vols    = _intraVols(data);
+    const volCols = _intraVolColors(data);
 
-    if(intradayChart) intradayChart.destroy();
-    intradayChart = new Chart(document.getElementById("intraday-chart").getContext("2d"), {
-      type:"line",
-      data:{labels:data.times,datasets:[{data:data.close,borderColor:color,backgroundColor:color+"15",fill:true,tension:0,pointRadius:0,borderWidth:1.5}]},
-      options:{...chartOpts, animation:{duration:200}}
-    });
+    if(rebuild || !intradayChart){
+      if(intradayChart) intradayChart.destroy();
+      intradayChart = new Chart(document.getElementById("intraday-chart").getContext("2d"), {
+        type:"candlestick",
+        data:{datasets:[{label:sym,data:candles,color:{up:"#00d084",down:"#ff3b3b",unchanged:"#999"}}]},
+        options:{
+          plugins:{legend:{display:false},tooltip:{mode:"index",intersect:false}},
+          interaction:{mode:"index",intersect:false},
+          scales:{
+            x:{type:"time",time:{tooltipFormat:"MMM d, HH:mm"},ticks:{color:"#555",maxTicksLimit:8,font:{size:10}},grid:{color:"#1a1a1a"}},
+            y:{ticks:{color:"#555",font:{size:10}},grid:{color:"#1a1a1a"},position:"right"}
+          },
+          animation:{duration:0}
+        }
+      });
+    } else {
+      intradayChart.data.datasets[0].data = candles;
+      intradayChart.update("none");
+    }
 
-    if(intradayVolChart) intradayVolChart.destroy();
-    intradayVolChart = new Chart(document.getElementById("intraday-vol").getContext("2d"), {
-      type:"bar",
-      data:{labels:data.times,datasets:[{data:data.volume,backgroundColor:data.close.map((c,i)=>i===0?"#555":c>=data.close[i-1]?"#00d08444":"#ff3b3b44"),borderWidth:0}]},
-      options:{plugins:{legend:{display:false}},scales:{x:{ticks:{display:false},grid:{display:false}},y:{ticks:{color:"#555",font:{size:9},callback:v=>v>=1e6?`${(v/1e6).toFixed(0)}M`:v},grid:{color:"#1a1a1a"},position:"right"}},animation:{duration:200}}
-    });
+    if(rebuild || !intradayVolChart){
+      if(intradayVolChart) intradayVolChart.destroy();
+      intradayVolChart = new Chart(document.getElementById("intraday-vol").getContext("2d"), {
+        type:"bar",
+        data:{datasets:[{data:vols,backgroundColor:volCols,borderWidth:0}]},
+        options:{
+          plugins:{legend:{display:false}},
+          scales:{
+            x:{type:"time",ticks:{display:false},grid:{display:false}},
+            y:{ticks:{color:"#555",font:{size:9},callback:v=>v>=1e6?`${(v/1e6).toFixed(0)}M`:v},grid:{color:"#1a1a1a"},position:"right"}
+          },
+          animation:{duration:0}
+        }
+      });
+    } else {
+      intradayVolChart.data.datasets[0].data = vols;
+      intradayVolChart.data.datasets[0].backgroundColor = volCols;
+      intradayVolChart.update("none");
+    }
   } catch(e) { console.error("intraday error", e); }
 }
+
+// Near-live updates: re-poll every 20s, but ONLY while the Intraday page is on-screen
+// and the tab is visible — so it doesn't burn the free-tier instance in the background.
+function startIntradayLive(sym){
+  stopIntradayLive();
+  intradayTimer = setInterval(()=>{
+    const pg = document.getElementById("page-intraday");
+    if(pg && pg.classList.contains("active") && document.visibilityState==="visible"){
+      refreshIntraday(sym, false);
+    }
+  }, 20000);
+}
+function stopIntradayLive(){ if(intradayTimer){ clearInterval(intradayTimer); intradayTimer=null; } }
 
 // ── COMPARE ───────────────────────────────────────────────────
 let compareChart=null;
