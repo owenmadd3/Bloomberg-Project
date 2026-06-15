@@ -1447,21 +1447,23 @@ def compare_securities(symbols: str = "", period: str = "1y"):
 # ── MOST ACTIVE ───────────────────────────────────────────────
 @app.get("/most-active")
 def most_active():
+    # Cache + parallelize: this hits ~30 tickers' .info, which is ~7s done serially.
+    data, hit = cached("most_active", ttl=60)
+    if hit:
+        return data
     symbols = [
         "AAPL","MSFT","NVDA","TSLA","AMZN","META","GOOGL","AMD","INTC","PLTR",
         "BAC","F","AAL","CCL","SOFI","NIO","RIVN","AMC","GME","SPY","QQQ","SOXL",
         "TQQQ","SPXL","JPM","VZ","T","PFE","HOOD","COIN","MARA","RIOT"
     ]
-    results = []
-    for sym in symbols:
+    def _one(sym):
         try:
-            t = yf.Ticker(sym)
-            info = t.info
+            info = yf.Ticker(sym).info
             vol = info.get("regularMarketVolume", 0) or 0
             price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
             change = info.get("regularMarketChangePercent", 0) or 0
             avg_vol = info.get("averageVolume", 1) or 1
-            results.append({
+            return {
                 "symbol": sym,
                 "price":  round(price, 2),
                 "change": round(change, 2),
@@ -1469,11 +1471,14 @@ def most_active():
                 "avg_volume": avg_vol,
                 "rel_volume": round(vol / avg_vol, 2) if avg_vol else 0,
                 "name": info.get("shortName", sym),
-            })
-        except:
-            pass
+            }
+        except Exception:
+            return None
+    results = [r for r in _parallel(_one, symbols) if r]
     results.sort(key=lambda x: x["volume"], reverse=True)
-    return results[:20]
+    result = results[:20]
+    set_cache("most_active", result)
+    return result
 
 # ── PRE/AFTER MARKET QUOTES ───────────────────────────────────
 @app.get("/allq/{symbol}")
