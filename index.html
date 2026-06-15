@@ -384,6 +384,38 @@
     .heat-sym { font-size:10px; color:rgba(255,255,255,0.6); margin-bottom:4px; }
     .heat-name { font-size:13px; font-weight:bold; color:var(--text); margin-bottom:6px; }
     .heat-chg { font-size:16px; font-weight:bold; }
+
+    /* ── WORKSPACE ─────────────────────────────────────────────── */
+    #page-workspace { flex-direction: column; overflow: hidden; }
+    #ws-toolbar { display:flex; align-items:center; gap:10px; padding:10px 16px; background:var(--bg3); border-bottom:1px solid var(--border2); flex-shrink:0; }
+    .ws-btn { background:var(--bg4); border:1px solid var(--border2); color:var(--text2); padding:5px 12px; cursor:pointer; font-family:inherit; font-size:11px; letter-spacing:0.5px; }
+    .ws-btn:hover { background:#1f1f1f; color:var(--text); }
+    .ws-btn-primary { background:#f90; color:#000; border-color:#f90; font-weight:bold; }
+    .ws-btn-primary:hover { background:#ffb33d; color:#000; }
+    .ws-menu { position:absolute; top:100%; left:0; margin-top:4px; background:var(--bg3); border:1px solid #f90; min-width:240px; max-height:480px; overflow-y:auto; z-index:100; box-shadow:0 4px 16px rgba(0,0,0,0.5); }
+    .ws-menu-group { color:#f90; font-size:10px; letter-spacing:1px; padding:8px 12px 4px; border-bottom:1px solid var(--border2); }
+    .ws-menu-item { padding:7px 14px; cursor:pointer; color:var(--text2); font-size:12px; border-bottom:1px solid #111; }
+    .ws-menu-item:hover { background:var(--bg4); color:var(--text); }
+
+    #ws-canvas { position:relative; flex:1; overflow:auto; background:#050505;
+                 background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                                   linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+                 background-size: 20px 20px; }
+    .ws-widget { position:absolute; background:var(--bg3); border:1px solid var(--border2); display:flex; flex-direction:column; box-shadow:0 2px 8px rgba(0,0,0,0.4); min-width:240px; min-height:160px; }
+    .ws-widget:hover { border-color:#333; }
+    .ws-widget.dragging { border-color:#f90; box-shadow:0 4px 24px rgba(255,153,0,0.25); opacity:0.95; }
+    .ws-widget-header { display:flex; align-items:center; padding:6px 10px; background:var(--bg4); border-bottom:1px solid var(--border2); cursor:move; user-select:none; flex-shrink:0; gap:8px; }
+    .ws-widget-title { color:#f90; font-size:11px; font-weight:bold; letter-spacing:0.5px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .ws-widget-close { color:#666; font-size:14px; cursor:pointer; padding:0 4px; line-height:1; }
+    .ws-widget-close:hover { color:#ff3b3b; }
+    .ws-widget-sym { background:var(--bg2); border:1px solid var(--border2); color:var(--text); padding:2px 6px; font-family:inherit; font-size:10px; width:64px; text-transform:uppercase; }
+    .ws-widget-sym:focus { border-color:#f90; outline:none; }
+    .ws-widget-body { flex:1; overflow:hidden; position:relative; }
+    .ws-widget-body iframe { width:100%; height:100%; border:0; background:var(--bg2); }
+    .ws-resize { position:absolute; right:0; bottom:0; width:14px; height:14px; cursor:nwse-resize;
+                 background: linear-gradient(135deg, transparent 50%, #555 50%, #555 60%, transparent 60%, transparent 70%, #555 70%, #555 80%, transparent 80%); }
+    .ws-resize:hover { background: linear-gradient(135deg, transparent 50%, #f90 50%, #f90 60%, transparent 60%, transparent 70%, #f90 70%, #f90 80%, transparent 80%); }
+    #ws-empty { color:var(--text4); text-align:center; padding:80px 20px; font-size:13px; line-height:1.8; }
   </style>
 </head>
 <body>
@@ -425,6 +457,7 @@
       <div class="nav-dropdown-item" onclick="navTo('mostactive','grp-markets')">Most Active</div>
       <div class="nav-dropdown-item" onclick="navTo('compare','grp-markets')">Compare</div>
       <div class="nav-dropdown-item" onclick="navTo('heatmap','grp-markets')">Sector Heatmap <span style="color:#333;font-size:10px;">[H]</span></div>
+      <div class="nav-dropdown-item" onclick="navTo('workspace','grp-markets')">Workspace <span class="nav-badge">NEW</span></div>
     </div>
   </div>
 
@@ -1505,6 +1538,21 @@
       </div>
     </div>
 
+    <!-- WORKSPACE PAGE -->
+    <div class="page" id="page-workspace">
+      <div id="ws-toolbar">
+        <div style="color:#f90;font-size:13px;font-weight:bold;letter-spacing:1px;">WORKSPACE</div>
+        <div style="position:relative;">
+          <button class="ws-btn ws-btn-primary" onclick="wsToggleAddMenu(event)">+ Add Widget ▾</button>
+          <div id="ws-add-menu" class="ws-menu" style="display:none;"></div>
+        </div>
+        <button class="ws-btn" onclick="wsResetLayout()">↺ Reset</button>
+        <div style="flex:1;"></div>
+        <div style="color:var(--text4);font-size:11px;">Drag the header to move · drag the corner to resize</div>
+      </div>
+      <div id="ws-canvas"></div>
+    </div>
+
   </div><!-- end main -->
 </div><!-- end layout -->
 
@@ -1638,6 +1686,59 @@ function applyPriceUpdates(data) {
 // Start WebSocket on load
 connectWebSocket();
 
+// Workspace-iframe mode: when the page is loaded with ?ws=<pageId>, hide the chrome
+// (sidebar, top nav, command bar) and auto-navigate to that page so it fills the iframe.
+(function _wsIframeMode() {
+  const params = new URLSearchParams(window.location.search);
+  const wsPage = params.get("ws");
+  const wsSym  = params.get("sym");
+  if (!wsPage) return;
+  const style = document.createElement("style");
+  style.textContent = `
+    /* Hide all the site chrome so the widget shows only the page's content. */
+    #sidebar, #topbar, #cmdbar, #nav, #searchbar, #alert-toast, #shortcut-overlay { display:none !important; }
+    #layout, #main { margin:0 !important; padding:0 !important; height:100vh !important; }
+    body, html { background:var(--bg2) !important; overflow:hidden !important; margin:0 !important; padding:0 !important; }
+    .page { padding-top:0 !important; height:100vh !important; }
+    /* Stock-overview page hides its empty-state hero so a widget gets straight to data. */
+    #empty-state { display:none !important; }
+  `;
+  document.head.appendChild(style);
+  // Defer so the page's normal init runs first
+  setTimeout(() => {
+    try {
+      // Top-level pages use showPage; sub-pages use navTo (with a group id).
+      const topLevel = { brief:"nav-brief", news:"nav-news", ai:"nav-ai" };
+      // For symbol-aware pages, route through searchSymbol so the page actually loads data.
+      if (wsSym && (wsPage === "markets" || wsPage === "intraday")) {
+        if (wsPage === "intraday") {
+          navTo("intraday", "grp-markets");
+          const input = document.getElementById("intraday-sym");
+          if (input) input.value = wsSym;
+          if (typeof loadIntraday === "function") loadIntraday();
+        } else {
+          searchSymbol(wsSym);
+        }
+        return;
+      }
+      if (topLevel[wsPage]) {
+        showPage(wsPage, document.getElementById(topLevel[wsPage]));
+      } else {
+        // best-effort: find which nav group this page belongs to
+        const groupMap = {
+          markets:"grp-markets", intraday:"grp-markets", mostactive:"grp-markets",
+          compare:"grp-markets", heatmap:"grp-markets",
+          screener:"grp-research", valuation:"grp-research", "52week":"grp-research",
+          correlation:"grp-research", volatility:"grp-research", trade:"grp-research",
+          portfolio:"grp-portfolio", dividends:"grp-portfolio",
+          forex:"grp-macro", calendar:"grp-macro", fred:"grp-macro",
+        };
+        navTo(wsPage, groupMap[wsPage] || "grp-markets");
+      }
+    } catch (e) { console.error("ws iframe init failed:", e); }
+  }, 50);
+})();
+
 // Override fetch to add ngrok bypass header for all API calls
 const _fetch = window.fetch;
 window.fetch = function(url, opts={}) {
@@ -1700,6 +1801,7 @@ function navTo(name, groupId) {
   if(name==="fred")       loadFred();
   if(name==="valuation")  initValuation();
   if(name==="mostactive") loadMostActive();
+  if(name==="workspace")  wsInit();
 }
 
 // ── VALUE SCREENER ───────────────────────────────────────────
@@ -4339,6 +4441,203 @@ async function loadBrief(force=false) {
   } catch(e) {
     document.getElementById('brief-loading').textContent = 'Failed to load brief: ' + e.message;
   }
+}
+
+// ── WORKSPACE ───────────────────────────────────────────────────
+// A user-customizable dashboard. Each widget renders one of the site's existing
+// pages inside an iframe — that gives every widget its own JS world so the
+// pages' fixed IDs / globals don't collide. Layouts persist in localStorage.
+// Pages that accept a ticker — these widgets get a symbol input in the header.
+const WS_SYMBOL_PAGES = new Set(["markets", "intraday"]);
+const WS_PAGES = [
+  { group:"Markets",  items:[
+    {id:"markets",    name:"Stock Overview"},
+    {id:"intraday",   name:"Intraday Chart"},
+    {id:"mostactive", name:"Most Active"},
+    {id:"compare",    name:"Compare"},
+    {id:"heatmap",    name:"Sector Heatmap"},
+  ]},
+  { group:"Research", items:[
+    {id:"screener",    name:"Stock Screener"},
+    {id:"valuation",   name:"Value Screener"},
+    {id:"52week",      name:"52W Hi/Lo"},
+    {id:"correlation", name:"Correlation Matrix"},
+    {id:"volatility",  name:"Volatility / VIX"},
+    {id:"trade",       name:"Trade Research"},
+  ]},
+  { group:"Portfolio", items:[
+    {id:"portfolio",  name:"Holdings & P&L"},
+    {id:"dividends",  name:"Dividends"},
+  ]},
+  { group:"Macro", items:[
+    {id:"forex",     name:"Forex / Fixed Income"},
+    {id:"calendar",  name:"Economic Calendar"},
+    {id:"fred",      name:"FRED Indicators"},
+  ]},
+  { group:"Other", items:[
+    {id:"brief",  name:"Morning Brief"},
+    {id:"news",   name:"Market News"},
+    {id:"ai",     name:"AI Chat"},
+  ]},
+];
+
+let wsWidgets = [];           // [{id, page, x, y, w, h, title}]
+let wsNextId = 1;
+let wsInitialized = false;
+
+function wsInit() {
+  if (wsInitialized) return;
+  wsInitialized = true;
+  // Seed with two starter widgets so it's not empty on first visit.
+  wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
+  wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
+  // Close the Add menu on any outside click
+  document.addEventListener("click", (e) => {
+    const menu = document.getElementById("ws-add-menu");
+    if (!menu || menu.style.display === "none") return;
+    if (!e.target.closest("#ws-add-menu") && !e.target.closest("[onclick*='wsToggleAddMenu']")) {
+      menu.style.display = "none";
+    }
+  });
+}
+
+function wsToggleAddMenu(e) {
+  e?.stopPropagation();
+  const menu = document.getElementById("ws-add-menu");
+  if (!menu) return;
+  if (menu.style.display === "block") { menu.style.display = "none"; return; }
+  menu.innerHTML = WS_PAGES.map(g => `
+    <div class="ws-menu-group">${g.group}</div>
+    ${g.items.map(p => `<div class="ws-menu-item" onclick="wsAddWidget('${p.id}'); document.getElementById('ws-add-menu').style.display='none';">${p.name}</div>`).join("")}
+  `).join("");
+  menu.style.display = "block";
+}
+
+function wsAddWidget(pageId, opts = {}) {
+  const meta = WS_PAGES.flatMap(g => g.items).find(p => p.id === pageId);
+  if (!meta) return;
+  const id = wsNextId++;
+  // Default placement: cascade so they don't all stack on top of each other.
+  const offset = (wsWidgets.length % 5) * 30;
+  const widget = {
+    id, page: pageId, title: meta.name,
+    x: opts.x ?? (40 + offset), y: opts.y ?? (40 + offset),
+    w: opts.w ?? 520, h: opts.h ?? 340,
+    symbol: opts.symbol ?? (WS_SYMBOL_PAGES.has(pageId) ? "AAPL" : ""),
+  };
+  wsWidgets.push(widget);
+  _wsRenderWidget(widget);
+}
+
+function _wsIframeSrc(w) {
+  const sym = w.symbol ? `&sym=${encodeURIComponent(w.symbol)}` : "";
+  return `${window.location.pathname}?ws=${encodeURIComponent(w.page)}${sym}#ws-${w.page}-${w.id}`;
+}
+
+function _wsRenderWidget(w) {
+  const canvas = document.getElementById("ws-canvas");
+  if (!canvas) return;
+  const el = document.createElement("div");
+  el.className = "ws-widget";
+  el.dataset.id = String(w.id);
+  el.style.left = w.x + "px";
+  el.style.top  = w.y + "px";
+  el.style.width  = w.w + "px";
+  el.style.height = w.h + "px";
+  // Symbol-aware widgets get a small ticker input in the header.
+  const symInput = WS_SYMBOL_PAGES.has(w.page) ? `
+    <input class="ws-widget-sym" value="${w.symbol}" maxlength="8"
+           onkeydown="if(event.key==='Enter') wsSetSymbol(${w.id}, this.value)"
+           onblur="wsSetSymbol(${w.id}, this.value)"
+           title="Press Enter to change symbol" />` : "";
+  el.innerHTML = `
+    <div class="ws-widget-header">
+      <span class="ws-widget-title">${w.title}${w.symbol ? " · " + w.symbol : ""}</span>
+      ${symInput}
+      <span class="ws-widget-close" onclick="wsRemoveWidget(${w.id})">✕</span>
+    </div>
+    <div class="ws-widget-body">
+      <iframe src="${_wsIframeSrc(w)}" loading="lazy"></iframe>
+    </div>
+    <div class="ws-resize"></div>
+  `;
+  canvas.appendChild(el);
+  _wsAttachDrag(el, w);
+  _wsAttachResize(el, w);
+}
+
+function wsSetSymbol(id, raw) {
+  const w = wsWidgets.find(x => x.id === id);
+  if (!w) return;
+  const sym = (raw || "").trim().toUpperCase();
+  if (!sym || sym === w.symbol) return;
+  w.symbol = sym;
+  const el = document.querySelector(`.ws-widget[data-id="${id}"]`);
+  if (!el) return;
+  el.querySelector(".ws-widget-title").textContent = `${w.title} · ${w.symbol}`;
+  // Reload the iframe with the new ?sym=
+  el.querySelector("iframe").src = _wsIframeSrc(w);
+}
+
+function _wsAttachDrag(el, w) {
+  const header = el.querySelector(".ws-widget-header");
+  header.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("ws-widget-close")) return;
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const origX = w.x, origY = w.y;
+    el.classList.add("dragging");
+    const move = (ev) => {
+      w.x = Math.max(0, origX + (ev.clientX - startX));
+      w.y = Math.max(0, origY + (ev.clientY - startY));
+      el.style.left = w.x + "px";
+      el.style.top  = w.y + "px";
+    };
+    const up = () => {
+      el.classList.remove("dragging");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
+function _wsAttachResize(el, w) {
+  const grip = el.querySelector(".ws-resize");
+  grip.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY;
+    const origW = w.w, origH = w.h;
+    const move = (ev) => {
+      w.w = Math.max(240, origW + (ev.clientX - startX));
+      w.h = Math.max(160, origH + (ev.clientY - startY));
+      el.style.width  = w.w + "px";
+      el.style.height = w.h + "px";
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
+function wsRemoveWidget(id) {
+  wsWidgets = wsWidgets.filter(w => w.id !== id);
+  const el = document.querySelector(`.ws-widget[data-id="${id}"]`);
+  if (el) el.remove();
+}
+
+function wsResetLayout() {
+  document.querySelectorAll("#ws-canvas .ws-widget").forEach(el => el.remove());
+  wsWidgets = [];
+  wsNextId = 1;
+  wsInit._seeded = false;
+  wsInitialized = false;
+  wsInit();
 }
 </script>
 </body>
