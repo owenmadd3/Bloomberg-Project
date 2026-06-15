@@ -3327,8 +3327,8 @@ async function loadIntraday() {
 }
 
 // Shape the intraday payload into Chart.js financial points (epoch-ms x-values).
-function _intraCandles(d){ return d.epoch.map((t,i)=>({x:t,o:d.open[i],h:d.high[i],l:d.low[i],c:d.close[i]})); }
-function _intraVols(d){ return d.epoch.map((t,i)=>({x:t,y:d.volume[i]})); }
+function _intraCandles(d){ return d.dt.map((s,i)=>({x:new Date(s).getTime(),o:d.open[i],h:d.high[i],l:d.low[i],c:d.close[i]})); }
+function _intraVols(d){ return d.dt.map((s,i)=>({x:new Date(s).getTime(),y:d.volume[i]})); }
 function _intraVolColors(d){ return d.close.map((c,i)=> i===0?"#555": c>=d.close[i-1]?"#00d08444":"#ff3b3b44"); }
 
 // rebuild=true creates the charts; rebuild=false mutates data in place for a smooth
@@ -3339,7 +3339,7 @@ async function refreshIntraday(sym, rebuild){
       fetch(`${API}/intraday/${sym}?interval=${intradayInterval}`).then(r=>r.json()),
       fetch(`${API}/stock/${sym}`).then(r=>r.json()),
     ]);
-    if(!data.epoch || !data.epoch.length) return;
+    if(!data.dt || !data.dt.length) return;
 
     document.getElementById("intraday-stats").innerHTML = `
       <div class="stat-box"><div class="s-label">${sym}</div><div class="s-val">$${info.price}</div></div>

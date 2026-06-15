@@ -376,11 +376,20 @@ def get_history(symbol: str, period: str = "1mo", interval: str = ""):
             hist = ticker.history(period="5d", interval="15m")
     else:
         hist = ticker.history(period=period)
-    # Intraday bars need date+time (ISO so the browser parses it); daily bars just the date.
+    # Intraday bars need date+time; show them in Central time (Yahoo returns the
+    # exchange's Eastern zone) so the chart matches the rest of the UI. The naive ISO
+    # is parsed verbatim by the browser, so every viewer sees Central regardless of
+    # their own zone. Daily bars: just the date.
     intraday = bool(interval) and interval[-1] in ("m", "h")
-    date_fmt = "%Y-%m-%dT%H:%M:%S" if intraday else "%Y-%m-%d"
+    if intraday:
+        idx = hist.index
+        if idx.tz is not None:
+            idx = idx.tz_convert("America/Chicago")
+        dates = idx.strftime("%Y-%m-%dT%H:%M:%S").tolist()
+    else:
+        dates = hist.index.strftime("%Y-%m-%d").tolist()
     result = {
-        "dates": hist.index.strftime(date_fmt).tolist(),
+        "dates": dates,
         "close": hist["Close"].round(2).tolist(),
         "open": hist["Open"].round(2).tolist(),
         "high": hist["High"].round(2).tolist(),
@@ -1396,11 +1405,16 @@ def get_intraday(symbol: str, interval: str = "5m"):
     hist = ticker.history(period="1d", interval=interval)
     if hist.empty:
         hist = ticker.history(period="5d", interval="15m")
+    # Convert Yahoo's Eastern timestamps to Central so every viewer sees the same zone.
+    idx = hist.index
+    if idx.tz is not None:
+        idx = idx.tz_convert("America/Chicago")
     result = {
-        "times":  hist.index.strftime("%H:%M").tolist(),
-        # epoch ms per bar — candlesticks need a real time axis (HH:MM strings would
-        # collide across days in the 5d fallback). tz-aware → timestamp() is UTC-correct.
-        "epoch":  [int(ts.timestamp() * 1000) for ts in hist.index],
+        "times":  idx.strftime("%H:%M").tolist(),
+        # Naive Central-time ISO per bar; the chart parses it verbatim (as local) so the
+        # axis shows Central regardless of the viewer's browser zone. Candles need a real
+        # time axis — bare HH:MM would collide across days in the 5d fallback.
+        "dt":     idx.strftime("%Y-%m-%dT%H:%M:%S").tolist(),
         "close":  hist["Close"].round(2).tolist(),
         "open":   hist["Open"].round(2).tolist(),
         "high":   hist["High"].round(2).tolist(),
