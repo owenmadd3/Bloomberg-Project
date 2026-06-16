@@ -417,6 +417,8 @@
     .ws-resize { position:absolute; right:0; bottom:0; width:14px; height:14px; cursor:nwse-resize;
                  background: linear-gradient(135deg, transparent 50%, #555 50%, #555 60%, transparent 60%, transparent 70%, #555 70%, #555 80%, transparent 80%); }
     .ws-resize:hover { background: linear-gradient(135deg, transparent 50%, #f90 50%, #f90 60%, transparent 60%, transparent 70%, #f90 70%, #f90 80%, transparent 80%); }
+    .ws-share-toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--bg3); border:1px solid #f90; color:#f90; padding:10px 18px; font-family:inherit; font-size:13px; letter-spacing:0.3px; z-index:9999; box-shadow:0 4px 16px rgba(0,0,0,0.5); }
+    .ws-shared-pill { margin-left:12px; background:rgba(255,153,0,0.08); border:1px solid #f90; color:#f90; padding:2px 10px; font-size:10px; letter-spacing:0.5px; }
     #ws-empty { color:var(--text4); text-align:center; padding:80px 20px; font-size:13px; line-height:1.8; }
   </style>
 </head>
@@ -1552,6 +1554,7 @@
           <button class="ws-btn ws-btn-primary" onclick="wsToggleAddMenu(event)">+ Add Widget ▾</button>
           <div id="ws-add-menu" class="ws-menu" style="display:none;"></div>
         </div>
+        <button class="ws-btn" onclick="wsShare()">🔗 Share</button>
         <button class="ws-btn" onclick="wsResetLayout()">↺ Reset</button>
         <div style="flex:1;"></div>
         <div style="color:var(--text4);font-size:11px;">Drag the header to move · drag the corner to resize</div>
@@ -4687,23 +4690,117 @@ function _wsLoadLayout() {
   } catch (e) { return null; }
 }
 
+// ── Shareable workspace URL ──────────────────────────────────────────
+// Encode the current layout as URL-safe base64 in ?layout=... so users can send
+// their dashboard via a single link. Compact keys keep most layouts well under
+// 1KB; the receiver's localStorage still gets autosaved so they can edit from
+// there.
+function _wsEncodeLayout(widgets) {
+  const compact = widgets.map(({page, x, y, w, h, symbol, syms}) => {
+    const o = {p: page, x, y, w, h};
+    if (symbol) o.s = symbol;
+    if (syms)   o.m = syms;
+    return o;
+  });
+  const json = JSON.stringify({v: 1, w: compact});
+  return btoa(json).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function _wsDecodeLayout(encoded) {
+  try {
+    const padded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const obj = JSON.parse(atob(padded));
+    if (!obj || !Array.isArray(obj.w)) return null;
+    // Only keep widgets whose page still exists (defensive against renames).
+    const known = new Set(WS_PAGES.flatMap(g => g.items).map(p => p.id));
+    return obj.w
+      .filter(o => o && known.has(o.p))
+      .map(o => ({
+        page: o.p, x: +o.x || 20, y: +o.y || 20, w: +o.w || 520, h: +o.h || 340,
+        symbol: o.s || "", syms: o.m || "",
+      }));
+  } catch (e) { return null; }
+}
+
+async function wsShare() {
+  if (!wsWidgets.length) {
+    alert("Add some widgets to your workspace first.");
+    return;
+  }
+  const encoded = _wsEncodeLayout(wsWidgets);
+  const url = `${location.origin}${location.pathname}?layout=${encoded}`;
+  // Defensive size check — most browsers handle >8KB URLs, but warn at 4KB so
+  // long layouts get a heads-up rather than silently failing somewhere down the
+  // line (some chat apps trim long URLs).
+  if (url.length > 4000) {
+    if (!confirm(`This layout is large (${url.length} chars). The link may not survive every chat app or email. Copy anyway?`)) return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    _wsToast("✓ Layout link copied to clipboard");
+  } catch (e) {
+    // Fallback: surface the URL so the user can copy it manually
+    prompt("Copy this link to share your layout:", url);
+  }
+}
+
+function _wsToast(msg) {
+  const existing = document.querySelector(".ws-share-toast");
+  if (existing) existing.remove();
+  const t = document.createElement("div");
+  t.className = "ws-share-toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2500);
+}
+
+function _wsShowSharedPill() {
+  const title = document.querySelector("#ws-toolbar > div:first-child");
+  if (!title || title.querySelector(".ws-shared-pill")) return;
+  const pill = document.createElement("span");
+  pill.className = "ws-shared-pill";
+  pill.textContent = "loaded from shared link";
+  title.appendChild(pill);
+  setTimeout(() => pill.remove(), 6000);
+}
+
 function wsInit() {
   if (wsInitialized) return;
   wsInitialized = true;
-  const saved = _wsLoadLayout();
-  if (saved && saved.widgets.length) {
-    // Restore saved layout. _wsRenderWidget pushes into wsWidgets via wsAddWidget below.
-    wsNextId = saved.nextId || 1;
-    for (const w of saved.widgets) {
-      // Skip pages we no longer recognize (e.g. removed in an update).
-      if (!WS_PAGES.flatMap(g => g.items).find(p => p.id === w.page)) continue;
-      wsWidgets.push(w);
-      _wsRenderWidget(w);
+  // Priority order:
+  //   1. ?layout=... in the URL (shared link) — overrides everything, then strips
+  //      itself from the URL so refreshing doesn't re-import it
+  //   2. autosaved layout in localStorage
+  //   3. seed defaults (first-time visitor)
+  const sharedParam = new URLSearchParams(window.location.search).get("layout");
+  const shared = sharedParam ? _wsDecodeLayout(sharedParam) : null;
+  if (shared && shared.length) {
+    wsNextId = 1;
+    for (const w of shared) {
+      wsAddWidget(w.page, {x: w.x, y: w.y, w: w.w, h: w.h, symbol: w.symbol, syms: w.syms});
     }
+    _wsShowSharedPill();
+    // Clean the URL so subsequent reloads use the now-autosaved layout
+    try {
+      const clean = location.pathname + location.hash;
+      history.replaceState({}, "", clean);
+    } catch (e) {}
   } else {
-    // First-time visit: seed with two starter widgets so it's not empty.
-    wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
-    wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
+    const saved = _wsLoadLayout();
+    if (saved && saved.widgets.length) {
+      // Restore saved layout. _wsRenderWidget pushes into wsWidgets via wsAddWidget below.
+      wsNextId = saved.nextId || 1;
+      for (const w of saved.widgets) {
+        // Skip pages we no longer recognize (e.g. removed in an update).
+        if (!WS_PAGES.flatMap(g => g.items).find(p => p.id === w.page)) continue;
+        wsWidgets.push(w);
+        _wsRenderWidget(w);
+      }
+    } else {
+      // First-time visit: seed with two starter widgets so it's not empty.
+      wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
+      wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
+    }
   }
   // Close any open toolbar menu on outside click. Toggle buttons (Add/Preset)
   // are detected by their onclick referencing wsToggle*.
