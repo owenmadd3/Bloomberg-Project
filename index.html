@@ -1710,6 +1710,11 @@ if (!IS_WS_IFRAME) connectWebSocket();
     /* Portfolio page in a widget: hide the Add Position editor — that's a job for
        the full page. Frees ~120px so the perf chart moves above the fold. */
     #add-position-block { display:none !important; }
+    /* Intraday page in a widget: hide the duplicate ticker input + GO button.
+       The widget header has its own ticker input, and having two inputs led to
+       the widget title not updating when users typed in the inside one. */
+    #page-intraday #intraday-sym,
+    #page-intraday button[onclick="loadIntraday()"] { display:none !important; }
   `;
   document.head.appendChild(style);
   // Defer so the page's normal init runs first
