@@ -1543,6 +1543,10 @@
       <div id="ws-toolbar">
         <div style="color:#f90;font-size:13px;font-weight:bold;letter-spacing:1px;">WORKSPACE</div>
         <div style="position:relative;">
+          <button class="ws-btn" onclick="wsTogglePresetMenu(event)">⚏ Preset ▾</button>
+          <div id="ws-preset-menu" class="ws-menu" style="display:none;"></div>
+        </div>
+        <div style="position:relative;">
           <button class="ws-btn ws-btn-primary" onclick="wsToggleAddMenu(event)">+ Add Widget ▾</button>
           <div id="ws-add-menu" class="ws-menu" style="display:none;"></div>
         </div>
@@ -4507,7 +4511,140 @@ const WS_PAGES = [
 let wsWidgets = [];           // [{id, page, x, y, w, h, title, symbol}]
 let wsNextId = 1;
 let wsInitialized = false;
-const WS_STORAGE_KEY = "workspace_layout_v1";
+const WS_STORAGE_KEY       = "workspace_layout_v1";
+const WS_USER_PRESETS_KEY  = "workspace_user_presets_v1";
+
+// Built-in preset layouts: each is a complete workspace the user can switch into
+// with one click. Coordinates target a ~1240×740 canvas — Render's free tier
+// stays usable with ≤4 widgets, so each preset keeps to that.
+const WS_BUILTIN_PRESETS = [
+  {
+    name: "Trading Floor",
+    widgets: [
+      {page: "intraday",   x: 20,  y: 20,  w: 600, h: 380, symbol: "AAPL"},
+      {page: "mostactive", x: 640, y: 20,  w: 580, h: 380},
+      {page: "52week",     x: 20,  y: 420, w: 720, h: 300},
+      {page: "ai",         x: 760, y: 420, w: 460, h: 300},
+    ],
+  },
+  {
+    name: "Pre-Market Brief",
+    widgets: [
+      {page: "brief",    x: 20,  y: 20,  w: 1200, h: 400},
+      {page: "calendar", x: 20,  y: 440, w: 580,  h: 280},
+      {page: "news",     x: 620, y: 440, w: 600,  h: 280},
+    ],
+  },
+  {
+    name: "Macro Brief",
+    widgets: [
+      {page: "calendar", x: 20,  y: 20,  w: 600, h: 380},
+      {page: "fred",     x: 640, y: 20,  w: 580, h: 380},
+      {page: "heatmap",  x: 20,  y: 420, w: 600, h: 300},
+      {page: "forex",    x: 640, y: 420, w: 580, h: 300},
+    ],
+  },
+  {
+    name: "Portfolio Review",
+    widgets: [
+      {page: "portfolio", x: 20,  y: 20,  w: 800, h: 620},
+      {page: "52week",    x: 840, y: 20,  w: 400, h: 300},
+      {page: "ai",        x: 840, y: 340, w: 400, h: 300},
+    ],
+  },
+];
+
+function _wsGetUserPresets() {
+  try { return JSON.parse(localStorage.getItem(WS_USER_PRESETS_KEY)) || []; }
+  catch (e) { return []; }
+}
+function _wsSaveUserPresets(presets) {
+  try { localStorage.setItem(WS_USER_PRESETS_KEY, JSON.stringify(presets)); }
+  catch (e) { /* quota */ }
+}
+
+function wsLoadPreset(name) {
+  const builtin = WS_BUILTIN_PRESETS.find(p => p.name === name);
+  const preset  = builtin || _wsGetUserPresets().find(p => p.name === name);
+  if (!preset) return;
+  // Wipe the canvas, then re-add each widget. Autosave fires per add, so the
+  // last save will hold the full preset as the current layout.
+  document.querySelectorAll("#ws-canvas .ws-widget").forEach(el => el.remove());
+  wsWidgets = [];
+  wsNextId = 1;
+  for (const w of preset.widgets) {
+    wsAddWidget(w.page, {x: w.x, y: w.y, w: w.w, h: w.h, symbol: w.symbol});
+  }
+}
+
+function wsPromptSavePreset() {
+  if (!wsWidgets.length) {
+    alert("Add some widgets to the workspace first.");
+    return;
+  }
+  const name = prompt("Name this layout:");
+  if (!name || !name.trim()) return;
+  const trimmed = name.trim();
+  if (WS_BUILTIN_PRESETS.some(p => p.name === trimmed)) {
+    alert(`"${trimmed}" is a built-in preset name. Pick a different name.`);
+    return;
+  }
+  const presets = _wsGetUserPresets().filter(p => p.name !== trimmed);
+  presets.push({
+    name: trimmed,
+    widgets: wsWidgets.map(({page, x, y, w, h, symbol}) => ({page, x, y, w, h, symbol})),
+  });
+  _wsSaveUserPresets(presets);
+}
+
+function wsDeleteUserPreset(name) {
+  if (!confirm(`Delete the saved layout "${name}"?`)) return;
+  _wsSaveUserPresets(_wsGetUserPresets().filter(p => p.name !== name));
+  _wsBuildPresetMenu();
+  // Keep the menu open so the user sees their change
+  document.getElementById("ws-preset-menu").style.display = "block";
+}
+
+function _wsBuildPresetMenu() {
+  const menu = document.getElementById("ws-preset-menu");
+  if (!menu) return;
+  const esc = s => String(s).replace(/'/g, "\\'");
+  const close = "document.getElementById('ws-preset-menu').style.display='none';";
+  const user = _wsGetUserPresets();
+  const builtinHtml = WS_BUILTIN_PRESETS.map(p =>
+    `<div class="ws-menu-item" onclick="wsLoadPreset('${esc(p.name)}'); ${close}">${p.name}</div>`
+  ).join("");
+  const userHtml = user.length ? `
+    <div class="ws-menu-group">My Layouts</div>
+    ${user.map(p => `
+      <div class="ws-menu-item" style="display:flex;justify-content:space-between;align-items:center;padding-right:6px;">
+        <span style="flex:1;" onclick="wsLoadPreset('${esc(p.name)}'); ${close}">${p.name}</span>
+        <span style="color:#666;margin-left:10px;cursor:pointer;font-size:11px;padding:0 6px;"
+              title="Delete saved layout"
+              onclick="event.stopPropagation(); wsDeleteUserPreset('${esc(p.name)}');">✕</span>
+      </div>
+    `).join("")}
+  ` : "";
+  menu.innerHTML = `
+    <div class="ws-menu-group">Built-in</div>
+    ${builtinHtml}
+    ${userHtml}
+    <div class="ws-menu-item" style="color:#f90;border-top:1px solid #1f1f1f;"
+         onclick="${close} wsPromptSavePreset();">+ Save current as preset...</div>
+  `;
+}
+
+function wsTogglePresetMenu(e) {
+  e?.stopPropagation();
+  const menu = document.getElementById("ws-preset-menu");
+  if (!menu) return;
+  if (menu.style.display === "block") { menu.style.display = "none"; return; }
+  _wsBuildPresetMenu();
+  menu.style.display = "block";
+  // Also close the Add menu if it happens to be open
+  const addMenu = document.getElementById("ws-add-menu");
+  if (addMenu) addMenu.style.display = "none";
+}
 
 // Persist the current layout to localStorage so it survives refresh + close.
 // Called after every add/remove/move/resize/symbol-change.
@@ -4547,12 +4684,14 @@ function wsInit() {
     wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
     wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
   }
-  // Close the Add menu on any outside click
+  // Close any open toolbar menu on outside click. Toggle buttons (Add/Preset)
+  // are detected by their onclick referencing wsToggle*.
   document.addEventListener("click", (e) => {
-    const menu = document.getElementById("ws-add-menu");
-    if (!menu || menu.style.display === "none") return;
-    if (!e.target.closest("#ws-add-menu") && !e.target.closest("[onclick*='wsToggleAddMenu']")) {
-      menu.style.display = "none";
+    const onToggle = e.target.closest("[onclick*='wsToggle']");
+    for (const menuId of ["ws-add-menu", "ws-preset-menu"]) {
+      const menu = document.getElementById(menuId);
+      if (!menu || menu.style.display === "none") continue;
+      if (!e.target.closest(`#${menuId}`) && !onToggle) menu.style.display = "none";
     }
   });
 }
