@@ -1727,7 +1727,14 @@ if (!IS_WS_IFRAME) connectWebSocket();
         if (wsPage === "intraday") {
           navTo("intraday", "grp-markets");
           const input = document.getElementById("intraday-sym");
-          if (input) input.value = wsSym;
+          const goBtn = document.querySelector('#page-intraday button[onclick="loadIntraday()"]');
+          if (input) {
+            input.value = wsSym;
+            // Belt-and-suspenders: even though iframe-mode CSS hides these, set inline
+            // styles too in case a browser fails to apply that CSS in time.
+            input.style.display = "none";
+          }
+          if (goBtn) goBtn.style.display = "none";
           if (typeof loadIntraday === "function") loadIntraday();
         } else {
           searchSymbol(wsSym);
