@@ -1777,6 +1777,18 @@ if (!IS_WS_IFRAME) connectWebSocket();
   }, 50);
 })();
 
+// Shared-link auto-route: when the URL has ?layout=..., open the Workspace page
+// directly so the recipient sees the dashboard immediately instead of landing on
+// the default Markets page. wsInit() reads the param and renders the widgets.
+(function _wsSharedLinkAutoRoute() {
+  if (IS_WS_IFRAME) return; // never inside a widget iframe
+  if (!new URLSearchParams(window.location.search).has("layout")) return;
+  setTimeout(() => {
+    try { navTo("workspace", "grp-markets"); }
+    catch (e) { console.error("shared-link auto-route failed:", e); }
+  }, 50);
+})();
+
 // Override fetch to add ngrok bypass header for all API calls
 const _fetch = window.fetch;
 window.fetch = function(url, opts={}) {
