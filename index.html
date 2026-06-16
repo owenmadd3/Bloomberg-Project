@@ -4650,7 +4650,10 @@ function wsSetSymbol(id, raw) {
 function _wsAttachDrag(el, w) {
   const header = el.querySelector(".ws-widget-header");
   header.addEventListener("mousedown", (e) => {
+    // Bail on interactive elements so they can receive clicks/focus normally.
+    // (The drag handler's preventDefault was stealing focus from the ticker input.)
     if (e.target.classList.contains("ws-widget-close")) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
     e.preventDefault();
     const startX = e.clientX, startY = e.clientY;
     const origX = w.x, origY = w.y;
