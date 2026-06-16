@@ -1031,7 +1031,7 @@
         </div>
 
         <!-- Add Position -->
-        <div style="background:var(--bg2);border:1px solid var(--border);padding:14px;margin-bottom:16px;">
+        <div id="add-position-block" style="background:var(--bg2);border:1px solid var(--border);padding:14px;margin-bottom:16px;">
           <div style="color:#f90;font-size:11px;letter-spacing:1px;margin-bottom:10px;">ADD POSITION</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
             <div style="display:flex;flex-direction:column;gap:4px;">
@@ -1707,6 +1707,9 @@ if (!IS_WS_IFRAME) connectWebSocket();
     .page { padding-top:0 !important; height:100vh !important; }
     /* Stock-overview page hides its empty-state hero so a widget gets straight to data. */
     #empty-state { display:none !important; }
+    /* Portfolio page in a widget: hide the Add Position editor — that's a job for
+       the full page. Frees ~120px so the perf chart moves above the fold. */
+    #add-position-block { display:none !important; }
   `;
   document.head.appendChild(style);
   // Defer so the page's normal init runs first
@@ -4527,10 +4530,17 @@ function wsAddWidget(pageId, opts = {}) {
   const id = wsNextId++;
   // Default placement: cascade so they don't all stack on top of each other.
   const offset = (wsWidgets.length % 5) * 30;
+  // Page-specific default sizes — pages with lots of stacked content (portfolio,
+  // calendar, brief, screeners) get more vertical room so the key content
+  // doesn't land below the fold.
+  const tallPages = new Set(["portfolio", "brief", "calendar", "screener", "valuation", "trade", "fred"]);
+  const widePages = new Set(["compare", "correlation", "heatmap"]);
+  const defaultW = widePages.has(pageId) ? 760 : 520;
+  const defaultH = tallPages.has(pageId) ? 620 : 340;
   const widget = {
     id, page: pageId, title: meta.name,
     x: opts.x ?? (40 + offset), y: opts.y ?? (40 + offset),
-    w: opts.w ?? 520, h: opts.h ?? 340,
+    w: opts.w ?? defaultW, h: opts.h ?? defaultH,
     symbol: opts.symbol ?? (WS_SYMBOL_PAGES.has(pageId) ? "AAPL" : ""),
   };
   wsWidgets.push(widget);
