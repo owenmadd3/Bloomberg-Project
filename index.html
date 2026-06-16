@@ -410,6 +410,8 @@
     .ws-widget-close:hover { color:#ff3b3b; }
     .ws-widget-sym { background:var(--bg2); border:1px solid var(--border2); color:var(--text); padding:2px 6px; font-family:inherit; font-size:10px; width:64px; text-transform:uppercase; }
     .ws-widget-sym:focus { border-color:#f90; outline:none; }
+    .ws-widget-syms { background:var(--bg2); border:1px solid var(--border2); color:var(--text); padding:2px 6px; font-family:inherit; font-size:10px; width:200px; text-transform:uppercase; }
+    .ws-widget-syms:focus { border-color:#f90; outline:none; }
     .ws-widget-body { flex:1; overflow:hidden; position:relative; }
     .ws-widget-body iframe { width:100%; height:100%; border:0; background:var(--bg2); }
     .ws-resize { position:absolute; right:0; bottom:0; width:14px; height:14px; cursor:nwse-resize;
@@ -1701,6 +1703,7 @@ if (!IS_WS_IFRAME) connectWebSocket();
   const params = new URLSearchParams(window.location.search);
   const wsPage = params.get("ws");
   const wsSym  = params.get("sym");
+  const wsSyms = params.get("syms");
   if (!wsPage) return;
   const style = document.createElement("style");
   style.textContent = `
@@ -1726,6 +1729,14 @@ if (!IS_WS_IFRAME) connectWebSocket();
     try {
       // Top-level pages use showPage; sub-pages use navTo (with a group id).
       const topLevel = { brief:"nav-brief", news:"nav-news", ai:"nav-ai" };
+      // Compare widget: pre-fill the symbol list and trigger the chart load.
+      if (wsPage === "compare" && wsSyms) {
+        navTo("compare", "grp-markets");
+        const inp = document.getElementById("compare-syms");
+        if (inp) inp.value = wsSyms;
+        if (typeof loadCompare === "function") loadCompare();
+        return;
+      }
       // For symbol-aware pages, route through searchSymbol so the page actually loads data.
       if (wsSym && (wsPage === "markets" || wsPage === "intraday")) {
         if (wsPage === "intraday") {
@@ -4476,6 +4487,16 @@ async function loadBrief(force=false) {
 // pages' fixed IDs / globals don't collide. Layouts persist in localStorage.
 // Pages that accept a ticker — these widgets get a symbol input in the header.
 const WS_SYMBOL_PAGES = new Set(["markets", "intraday"]);
+// Pages that accept a LIST of tickers — these widgets get a wider, comma-separated
+// input in the header. Defaults applied in wsAddWidget; URL param is &syms=...
+const WS_SYMS_PAGES   = new Set(["compare"]);
+const WS_DEFAULT_SYMS = "AAPL, MSFT, NVDA, GOOGL";
+
+function _wsNormalizeSyms(raw) {
+  return (raw || "")
+    .split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
+    .slice(0, 6).join(", ");
+}
 const WS_PAGES = [
   { group:"Markets",  items:[
     {id:"markets",    name:"Stock Overview"},
@@ -4726,6 +4747,7 @@ function wsAddWidget(pageId, opts = {}) {
     x: opts.x ?? (40 + offset), y: opts.y ?? (40 + offset),
     w: opts.w ?? defaultW, h: opts.h ?? defaultH,
     symbol: opts.symbol ?? (WS_SYMBOL_PAGES.has(pageId) ? "AAPL" : ""),
+    syms:   opts.syms   ?? (WS_SYMS_PAGES.has(pageId)   ? WS_DEFAULT_SYMS : ""),
   };
   wsWidgets.push(widget);
   _wsRenderWidget(widget);
@@ -4734,10 +4756,11 @@ function wsAddWidget(pageId, opts = {}) {
 
 // Build the widget iframe URL with a build-time cache-buster (WS_VER, bumped each
 // time we change iframe-mode behavior) so a stale cached copy can't show through.
-const WS_VER = "20260616-2";
+const WS_VER = "20260616-3";
 function _wsIframeSrc(w) {
-  const sym = w.symbol ? `&sym=${encodeURIComponent(w.symbol)}` : "";
-  return `${window.location.pathname}?ws=${encodeURIComponent(w.page)}${sym}&v=${WS_VER}#ws-${w.page}-${w.id}`;
+  const sym  = w.symbol ? `&sym=${encodeURIComponent(w.symbol)}` : "";
+  const syms = w.syms   ? `&syms=${encodeURIComponent(w.syms)}`   : "";
+  return `${window.location.pathname}?ws=${encodeURIComponent(w.page)}${sym}${syms}&v=${WS_VER}#ws-${w.page}-${w.id}`;
 }
 
 function _wsRenderWidget(w) {
@@ -4750,16 +4773,26 @@ function _wsRenderWidget(w) {
   el.style.top  = w.y + "px";
   el.style.width  = w.w + "px";
   el.style.height = w.h + "px";
-  // Symbol-aware widgets get a small ticker input in the header.
-  const symInput = WS_SYMBOL_PAGES.has(w.page) ? `
-    <input class="ws-widget-sym" value="${w.symbol}" maxlength="8"
+  // Symbol-aware widgets get an input in the header — single ticker for /markets
+  // and /intraday, comma-separated list for /compare.
+  let headerInput = "";
+  if (WS_SYMBOL_PAGES.has(w.page)) {
+    headerInput = `<input class="ws-widget-sym" value="${w.symbol}" maxlength="8"
            onkeydown="if(event.key==='Enter') wsSetSymbol(${w.id}, this.value)"
            onblur="wsSetSymbol(${w.id}, this.value)"
-           title="Press Enter to change symbol" />` : "";
+           title="Press Enter to change symbol" />`;
+  } else if (WS_SYMS_PAGES.has(w.page)) {
+    headerInput = `<input class="ws-widget-syms" value="${w.syms}" maxlength="80"
+           placeholder="AAPL, MSFT, NVDA"
+           onkeydown="if(event.key==='Enter') wsSetSyms(${w.id}, this.value)"
+           onblur="wsSetSyms(${w.id}, this.value)"
+           title="Comma-separated tickers · Enter to apply" />`;
+  }
+  const titleSuffix = w.symbol ? " · " + w.symbol : w.syms ? " · " + w.syms : "";
   el.innerHTML = `
     <div class="ws-widget-header">
-      <span class="ws-widget-title">${w.title}${w.symbol ? " · " + w.symbol : ""}</span>
-      ${symInput}
+      <span class="ws-widget-title">${w.title}${titleSuffix}</span>
+      ${headerInput}
       <span class="ws-widget-close" onclick="wsRemoveWidget(${w.id})">✕</span>
     </div>
     <div class="ws-widget-body">
@@ -4782,6 +4815,20 @@ function wsSetSymbol(id, raw) {
   if (!el) return;
   el.querySelector(".ws-widget-title").textContent = `${w.title} · ${w.symbol}`;
   // Reload the iframe with the new ?sym=
+  el.querySelector("iframe").src = _wsIframeSrc(w);
+  _wsSaveLayout();
+}
+
+function wsSetSyms(id, raw) {
+  const w = wsWidgets.find(x => x.id === id);
+  if (!w) return;
+  const syms = _wsNormalizeSyms(raw);
+  if (!syms || syms === w.syms) return;
+  w.syms = syms;
+  const el = document.querySelector(`.ws-widget[data-id="${id}"]`);
+  if (!el) return;
+  el.querySelector(".ws-widget-title").textContent = `${w.title} · ${w.syms}`;
+  // Reload the iframe with the new ?syms=
   el.querySelector("iframe").src = _wsIframeSrc(w);
   _wsSaveLayout();
 }
