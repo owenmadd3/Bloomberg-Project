@@ -1562,6 +1562,11 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial/dist/chartjs-chart-financial.min.js"></script>
 <script>
 const API = "";
+// True when this page is rendered inside a Workspace widget iframe (?ws=<pageId>).
+// Used to short-circuit page-load work that targets DOM the widget hides — without
+// this, 4 widgets = 4 WebSockets + 4× /markets polling + 4× /movers + etc., which
+// crushes Render's free-tier 0.1 CPU.
+const IS_WS_IFRAME = new URLSearchParams(window.location.search).has("ws");
 
 // ── THEME TOGGLE ──────────────────────────────────────────────
 function toggleTheme() {
@@ -1683,8 +1688,8 @@ function applyPriceUpdates(data) {
   }
 }
 
-// Start WebSocket on load
-connectWebSocket();
+// Start WebSocket on load (skip in widget iframes — sidebar/watchlist is hidden)
+if (!IS_WS_IFRAME) connectWebSocket();
 
 // Workspace-iframe mode: when the page is loaded with ?ws=<pageId>, hide the chrome
 // (sidebar, top nav, command bar) and auto-navigate to that page so it fills the iframe.
@@ -1975,7 +1980,8 @@ async function loadMarkets() {
       </div>`).join("");
   } catch(e){}
 }
-loadMarkets(); setInterval(loadMarkets, 60000);
+// Top markets ticker — hidden inside widget iframes, so skip it (also kills the 60s poll).
+if (!IS_WS_IFRAME) { loadMarkets(); setInterval(loadMarkets, 60000); }
 
 // WATCHLIST
 // loadWatchlist defined below with sparklines
@@ -2011,7 +2017,8 @@ async function loadMovers() {
       </div>`;
   } catch(e){}
 }
-loadMovers();
+// Empty-state movers grid — only shows on the main Markets page, hidden in widgets.
+if (!IS_WS_IFRAME) loadMovers();
 
 // PERIOD
 function setPeriod(p, btn) {
@@ -2496,7 +2503,8 @@ async function loadWatchlist() {
     });
   }
 }
-loadWatchlist();
+// Sidebar watchlist — sidebar hidden in widgets, so skip the fetches.
+if (!IS_WS_IFRAME) loadWatchlist();
 
 // ── KEYBOARD SHORTCUTS ───────────────────────────────────────
 function toggleShortcuts() {
@@ -3828,8 +3836,8 @@ applyPriceUpdates = function(data) {
   }
 };
 
-// Init on load
-renderAlerts();
+// Init on load (skip in widgets — alerts UI lives in the hidden sidebar)
+if (!IS_WS_IFRAME) renderAlerts();
 // Pre-subscribe alert symbols
 if(alerts.length) wsSubscribe(alerts.filter(a=>!a.triggered).map(a=>a.sym));
 
