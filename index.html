@@ -4492,16 +4492,49 @@ const WS_PAGES = [
   ]},
 ];
 
-let wsWidgets = [];           // [{id, page, x, y, w, h, title}]
+let wsWidgets = [];           // [{id, page, x, y, w, h, title, symbol}]
 let wsNextId = 1;
 let wsInitialized = false;
+const WS_STORAGE_KEY = "workspace_layout_v1";
+
+// Persist the current layout to localStorage so it survives refresh + close.
+// Called after every add/remove/move/resize/symbol-change.
+function _wsSaveLayout() {
+  try {
+    const snapshot = wsWidgets.map(({id, page, title, x, y, w, h, symbol}) =>
+      ({id, page, title, x, y, w, h, symbol}));
+    localStorage.setItem(WS_STORAGE_KEY, JSON.stringify({widgets: snapshot, nextId: wsNextId}));
+  } catch (e) { /* ignore quota errors */ }
+}
+
+function _wsLoadLayout() {
+  try {
+    const raw = localStorage.getItem(WS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.widgets)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
 
 function wsInit() {
   if (wsInitialized) return;
   wsInitialized = true;
-  // Seed with two starter widgets so it's not empty on first visit.
-  wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
-  wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
+  const saved = _wsLoadLayout();
+  if (saved && saved.widgets.length) {
+    // Restore saved layout. _wsRenderWidget pushes into wsWidgets via wsAddWidget below.
+    wsNextId = saved.nextId || 1;
+    for (const w of saved.widgets) {
+      // Skip pages we no longer recognize (e.g. removed in an update).
+      if (!WS_PAGES.flatMap(g => g.items).find(p => p.id === w.page)) continue;
+      wsWidgets.push(w);
+      _wsRenderWidget(w);
+    }
+  } else {
+    // First-time visit: seed with two starter widgets so it's not empty.
+    wsAddWidget("intraday", { x: 20, y: 20, w: 560, h: 360 });
+    wsAddWidget("ai",       { x: 600, y: 20, w: 420, h: 360 });
+  }
   // Close the Add menu on any outside click
   document.addEventListener("click", (e) => {
     const menu = document.getElementById("ws-add-menu");
@@ -4545,6 +4578,7 @@ function wsAddWidget(pageId, opts = {}) {
   };
   wsWidgets.push(widget);
   _wsRenderWidget(widget);
+  _wsSaveLayout();
 }
 
 function _wsIframeSrc(w) {
@@ -4595,6 +4629,7 @@ function wsSetSymbol(id, raw) {
   el.querySelector(".ws-widget-title").textContent = `${w.title} · ${w.symbol}`;
   // Reload the iframe with the new ?sym=
   el.querySelector("iframe").src = _wsIframeSrc(w);
+  _wsSaveLayout();
 }
 
 function _wsAttachDrag(el, w) {
@@ -4615,6 +4650,7 @@ function _wsAttachDrag(el, w) {
       el.classList.remove("dragging");
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
+      _wsSaveLayout();
     };
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
@@ -4637,6 +4673,7 @@ function _wsAttachResize(el, w) {
     const up = () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
+      _wsSaveLayout();
     };
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
@@ -4647,13 +4684,15 @@ function wsRemoveWidget(id) {
   wsWidgets = wsWidgets.filter(w => w.id !== id);
   const el = document.querySelector(`.ws-widget[data-id="${id}"]`);
   if (el) el.remove();
+  _wsSaveLayout();
 }
 
 function wsResetLayout() {
   document.querySelectorAll("#ws-canvas .ws-widget").forEach(el => el.remove());
   wsWidgets = [];
   wsNextId = 1;
-  wsInit._seeded = false;
+  // Clear the saved layout too, so the next wsInit() reseeds defaults.
+  try { localStorage.removeItem(WS_STORAGE_KEY); } catch (e) {}
   wsInitialized = false;
   wsInit();
 }

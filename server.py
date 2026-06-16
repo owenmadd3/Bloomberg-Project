@@ -1428,20 +1428,37 @@ def get_intraday(symbol: str, interval: str = "5m"):
 @app.get("/compare")
 def compare_securities(symbols: str = "", period: str = "1y"):
     syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:20]
-    result = {}
-    for sym in syms:
+    if not syms:
+        return {}
+    # Without caching/parallelism, 10+ symbols hit serially can take >60s on the
+    # free tier — long enough to time out and crash the Portfolio perf chart.
+    key = f"compare_{','.join(syms)}_{period}"
+    data, hit = cached(key, ttl=60)
+    if hit:
+        return data
+
+    def _one(sym):
         try:
             hist = yf.Ticker(sym).history(period=period)["Close"]
-            # Normalize to % return from start
+            if hist.empty:
+                return None
             base = hist.iloc[0]
-            normalized = ((hist / base - 1) * 100).round(2).tolist()
-            result[sym] = {
+            if pd.isna(base) or base == 0:
+                return None
+            # Replace NaN with None so the JSON encoder (which rejects NaN as
+            # non-compliant) can serialize the row. Chart.js renders None as a gap.
+            def _clean(series):
+                return [None if pd.isna(v) else float(v) for v in series]
+            return sym, {
                 "dates":      hist.index.strftime("%Y-%m-%d").tolist(),
-                "normalized": normalized,
-                "raw":        hist.round(2).tolist(),
+                "normalized": _clean(((hist / base - 1) * 100).round(2)),
+                "raw":        _clean(hist.round(2)),
             }
-        except:
-            pass
+        except Exception:
+            return None
+
+    result = dict(p for p in _parallel(_one, syms) if p)
+    set_cache(key, result)
     return result
 
 # ── MOST ACTIVE ───────────────────────────────────────────────
