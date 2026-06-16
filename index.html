@@ -4593,9 +4593,12 @@ function wsAddWidget(pageId, opts = {}) {
   _wsSaveLayout();
 }
 
+// Build the widget iframe URL with a build-time cache-buster (WS_VER, bumped each
+// time we change iframe-mode behavior) so a stale cached copy can't show through.
+const WS_VER = "20260616-2";
 function _wsIframeSrc(w) {
   const sym = w.symbol ? `&sym=${encodeURIComponent(w.symbol)}` : "";
-  return `${window.location.pathname}?ws=${encodeURIComponent(w.page)}${sym}#ws-${w.page}-${w.id}`;
+  return `${window.location.pathname}?ws=${encodeURIComponent(w.page)}${sym}&v=${WS_VER}#ws-${w.page}-${w.id}`;
 }
 
 function _wsRenderWidget(w) {
