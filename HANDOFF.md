@@ -106,3 +106,92 @@ also force a rebuild from the dashboard with **Manual Deploy → Deploy latest c
 - **This is the deployed site.** The repo also contains `app.py`, a *separate* Streamlit
   research tool that is **not** part of this website. Deploying that is unrelated to this
   guide.
+
+---
+
+## Operations playbook (when things break)
+
+Most-likely problems, ranked by how often they actually happen, and how to fix each in under
+5 minutes from the Render dashboard.
+
+### "The site is slow / 'Loading…' forever"
+
+The free plan sleeps after ~15 minutes of no traffic. The first visitor after a quiet stretch
+waits ~50 seconds for it to wake. **This is not a bug** — it's the free tier.
+
+- **Quick check**: refresh the site twice. The first load wakes it; the second is fast.
+- **Real fix**: upgrade to Starter ($7/mo) in Render → `bloomberg-terminal` → **Settings →
+  Instance Type**. Always-on, no cold start. Strongly recommended for a customer-facing site.
+
+### "The page returns 502 Bad Gateway"
+
+Almost always a transient deploy or cold-start blip.
+
+- **Wait 30 seconds and refresh.** Render replaces instances during deploys; there's a brief
+  window where the gateway has nothing to route to.
+- If it persists for more than ~2 minutes, check the next section.
+
+### "The site is down / red status in Render"
+
+1. Render dashboard → `bloomberg-terminal` → **Events** tab. Find the latest entry.
+   - "Deploy failed" → click into the build log, look for the error (usually a Python
+     dependency mismatch or a syntax error in a recent commit).
+   - "Service crashed" → click **Logs** to see the stack trace.
+2. **Fastest recovery**: in **Manual Deploy** (top right), pick the last known-good commit
+   (one that previously said "Deploy live") and click **Deploy**.
+
+### "The AI features stopped working"
+
+The Groq or Anthropic API key has likely expired or been revoked.
+
+1. Test which one is dead: open the live site → try the **AI Chat** (Groq) and the
+   **Morning Brief** (Anthropic). Whichever errors is the dead key.
+2. Get a new key at the appropriate console (links in the API keys table above).
+3. Render → `bloomberg-terminal` → **Environment** → edit the variable → save.
+4. Render auto-redeploys; takes ~3 minutes.
+
+### "The Economic Calendar numbers are blank"
+
+`FRED_API_KEY` is missing or invalid. Numbers go blank, the schedule itself still shows.
+
+- Get a new free key at https://fredaccount.stlouisfed.org/apikeys (instant approval).
+- Paste it into Render's Environment tab as `FRED_API_KEY`.
+
+### "All the market data is broken / shows 'N/A'"
+
+Yahoo Finance is rate-limiting the server, or their service is down. There's no fix on our
+side; this is upstream. It usually clears within an hour. If it lasts longer than a day, the
+app's `yfinance` dependency may need a version bump — that's a developer task (see CLAUDE.md).
+
+### Verifying a deploy went out
+
+1. Render → Events → look for "Deploy live for `<commit hash>`".
+2. Compare to the latest GitHub commit hash at
+   https://github.com/owenmadd3/Bloomberg-Project/commits/main (or wherever the repo
+   has been transferred to).
+3. **If they match** → the new code is live. Hard-refresh the browser (Cmd/Ctrl+Shift+R)
+   to make sure you're not seeing a cached page.
+4. **If they don't match** → Render's still building. Wait or check the build log.
+
+### Manual smoke check (after any deploy)
+
+A 60-second sanity pass to confirm nothing's broken:
+
+1. Site loads at the URL (no 502, no 500).
+2. Top markets ticker (S&P / NASDAQ / DOW) shows numbers, not "N/A".
+3. Type a ticker (e.g. AAPL) in the search box → click GO → stock data + chart appear.
+4. Click **AI Chat** → ask "what is AAPL's PE?" → reply appears (proves Groq is up).
+5. Click **Markets → Workspace** → the dashboard renders with at least one widget.
+
+If all five pass, the site is healthy.
+
+---
+
+## Disaster recovery
+
+The codebase is on GitHub. Even if the Render service is deleted, the company can redeploy
+the whole site from a fresh Render account in ~5 minutes using the steps above ("How to
+deploy it from scratch"). Nothing is lost.
+
+The only thing that lives outside of Git is **environment variables** (API keys). Keep those
+in a password manager.
