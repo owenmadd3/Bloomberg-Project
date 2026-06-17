@@ -1196,6 +1196,7 @@
             <button class="intra-btn" onclick="setIntradayInterval('1h',this)">1h</button>
           </div>
           <button onclick="loadIntraday()" style="background:#f90;color:#000;border:none;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:bold;">GO</button>
+          <span style="color:var(--text4);font-size:10px;letter-spacing:0.3px;margin-left:auto;">Wheel to zoom · Drag to pan · Double-click to reset</span>
         </div>
         <div id="intraday-stats" style="display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:#1f1f1f;margin-bottom:12px;"></div>
         <div class="chart-box"><canvas id="intraday-chart" style="max-height:340px;"></canvas></div>
@@ -1569,6 +1570,9 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial/dist/chartjs-chart-financial.min.js"></script>
+<!-- Hammer.js is the touch/pinch dependency for chartjs-plugin-zoom -->
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <script>
 const API = "";
 // True when this page is rendered inside a Workspace widget iframe (?ws=<pageId>).
@@ -3486,6 +3490,16 @@ async function loadIntraday() {
 function _intraCandles(d){ return d.dt.map((s,i)=>({x:new Date(s).getTime(),o:d.open[i],h:d.high[i],l:d.low[i],c:d.close[i]})); }
 function _intraVols(d){ return d.dt.map((s,i)=>({x:new Date(s).getTime(),y:d.volume[i]})); }
 function _intraVolColors(d){ return d.close.map((c,i)=> i===0?"#555": c>=d.close[i-1]?"#00d08444":"#ff3b3b44"); }
+// Mirror the price chart's current x-range onto the volume chart so the bars
+// keep lining up under the candles after zoom/pan. Called from the zoom plugin
+// callbacks; first arg is {chart} so resetZoom() can reuse it.
+function _syncIntradayVolume({chart}){
+  if (!intradayVolChart || !chart?.scales?.x) return;
+  const x = intradayVolChart.options.scales.x;
+  x.min = chart.scales.x.min;
+  x.max = chart.scales.x.max;
+  intradayVolChart.update("none");
+}
 
 // rebuild=true creates the charts; rebuild=false mutates data in place for a smooth
 // live tick (no flicker, keeps the candlestick/volume canvases stable).
@@ -3515,7 +3529,18 @@ async function refreshIntraday(sym, rebuild){
         type:"candlestick",
         data:{datasets:[{label:sym,data:candles,color:{up:"#00d084",down:"#ff3b3b",unchanged:"#999"}}]},
         options:{
-          plugins:{legend:{display:false},tooltip:{mode:"index",intersect:false}},
+          plugins:{
+            legend:{display:false},
+            tooltip:{mode:"index",intersect:false},
+            // Mouse wheel = zoom on the time axis. Drag = pan. Pinch = touch zoom.
+            // After each gesture, mirror the new x-range onto the volume chart so
+            // the bars line up under the candles.
+            zoom:{
+              pan:  {enabled:true, mode:"x", onPanComplete: _syncIntradayVolume},
+              zoom: {wheel:{enabled:true}, pinch:{enabled:true}, mode:"x", onZoomComplete: _syncIntradayVolume},
+              limits:{x:{minRange: 60*1000}}, // can't zoom in below ~1 minute
+            },
+          },
           interaction:{mode:"index",intersect:false},
           scales:{
             x:{type:"time",time:{tooltipFormat:"MMM d, HH:mm"},ticks:{color:"#555",maxTicksLimit:8,font:{size:10}},grid:{color:"#1a1a1a"}},
@@ -3524,6 +3549,11 @@ async function refreshIntraday(sym, rebuild){
           animation:{duration:0}
         }
       });
+      // Double-click anywhere in the chart resets zoom + re-syncs the volume chart.
+      intradayChart.canvas.ondblclick = () => {
+        intradayChart.resetZoom();
+        _syncIntradayVolume({chart: intradayChart});
+      };
     } else {
       intradayChart.data.datasets[0].data = candles;
       intradayChart.update("none");
