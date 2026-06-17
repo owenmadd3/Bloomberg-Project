@@ -494,6 +494,7 @@
       <div class="nav-dropdown-item" onclick="navTo('forex','grp-macro')">Forex / Fixed Income <span style="color:#333;font-size:10px;">[F]</span></div>
       <div class="nav-dropdown-item" onclick="navTo('calendar','grp-macro')">Economic Calendar <span style="color:#333;font-size:10px;">[C]</span></div>
       <div class="nav-dropdown-item" onclick="navTo('fred','grp-macro')">FRED Indicators <span class="nav-badge">NEW</span></div>
+      <div class="nav-dropdown-item" onclick="navTo('aibrief','grp-macro')">⚡ AI Morning Brief <span class="nav-badge">NEW</span></div>
     </div>
   </div>
 
@@ -1543,6 +1544,21 @@
       </div>
     </div>
 
+    <!-- AI MORNING BRIEF PAGE -->
+    <div class="page" id="page-aibrief">
+      <div style="overflow-y:auto;padding:16px;flex:1;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+          <div>
+            <span style="color:var(--accent);font-size:14px;font-weight:bold;letter-spacing:1px;">⚡ AI MORNING BRIEF</span>
+            <span id="ai-brief-timestamp" style="color:var(--text3);font-size:11px;margin-left:12px;"></span>
+          </div>
+          <button onclick="loadAiBrief(true)" style="background:var(--bg4);border:1px solid var(--border2);color:var(--text2);padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px;">↺ Refresh</button>
+        </div>
+        <div id="ai-brief-loading" style="color:var(--text3);padding:20px 0;">Generating AI morning brief — analyzing overnight markets…</div>
+        <div id="ai-brief-body" style="color:var(--text);font-size:13px;line-height:1.7;display:none;"></div>
+      </div>
+    </div>
+
     <!-- WORKSPACE PAGE -->
     <div class="page" id="page-workspace">
       <div id="ws-toolbar">
@@ -1773,7 +1789,7 @@ if (!IS_WS_IFRAME) connectWebSocket();
           screener:"grp-research", valuation:"grp-research", "52week":"grp-research",
           correlation:"grp-research", volatility:"grp-research", trade:"grp-research",
           portfolio:"grp-portfolio", dividends:"grp-portfolio",
-          forex:"grp-macro", calendar:"grp-macro", fred:"grp-macro",
+          forex:"grp-macro", calendar:"grp-macro", fred:"grp-macro", aibrief:"grp-macro",
         };
         navTo(wsPage, groupMap[wsPage] || "grp-markets");
       }
@@ -1850,6 +1866,7 @@ function navTo(name, groupId) {
   if(name==="forex")      loadForex();
   if(name==="portfolio")  refreshPortfolio();
   if(name==="brief")      loadBrief(false);
+  if(name==="aibrief")    loadAiBrief(false);
   if(name==="trade")      initTrade();
   if(name==="dividends")  loadDividends();
   if(name==="fred")       loadFred();
@@ -4570,6 +4587,49 @@ async function loadBrief(force=false) {
   }
 }
 
+// ── AI MORNING BRIEF (standalone widget) ─────────────────────────────
+// Thin renderer for /ai/morning-brief — same Claude-generated text the full
+// Brief page shows, just on a dedicated page that fits in a Workspace tile.
+let _aiBriefLoaded = false;
+async function loadAiBrief(force=false) {
+  if (_aiBriefLoaded && !force) return;
+  const loading = document.getElementById('ai-brief-loading');
+  const body    = document.getElementById('ai-brief-body');
+  loading.style.display = 'block';
+  body.style.display = 'none';
+  try {
+    const d = await fetch(`${API}/ai/morning-brief`).then(r => r.json());
+    document.getElementById('ai-brief-timestamp').textContent = d.generated_at || '';
+    body.innerHTML = _renderAiBriefMarkdown(d.text || '(No brief available.)');
+    body.style.display = 'block';
+    loading.style.display = 'none';
+    _aiBriefLoaded = true;
+  } catch (e) {
+    loading.textContent = 'Failed to load AI brief: ' + e.message;
+  }
+}
+
+// Tiny markdown renderer: **bold** → accent color, lines starting with "*" or
+// "-" become bullets, numbered lines stay as paragraphs. Escapes HTML first so
+// the AI output can't inject markup.
+function _renderAiBriefMarkdown(text) {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const blocks = esc(text).split(/\n{2,}/);
+  return blocks.map(block => {
+    const lines = block.split('\n').filter(l => l.trim());
+    const allBullets = lines.length > 0 && lines.every(l => /^\s*[*-]\s+/.test(l));
+    if (allBullets) {
+      return '<ul style="margin:10px 0;padding-left:22px;">' +
+        lines.map(l => `<li style="margin-bottom:6px;">${_aiBriefInline(l.replace(/^\s*[*-]\s+/, ''))}</li>`).join('') +
+        '</ul>';
+    }
+    return `<p style="margin:10px 0;">${lines.map(_aiBriefInline).join('<br>')}</p>`;
+  }).join('');
+}
+function _aiBriefInline(s) {
+  return s.replace(/\*\*(.+?)\*\*/g, '<span style="color:var(--accent);font-weight:bold;">$1</span>');
+}
+
 // ── WORKSPACE ───────────────────────────────────────────────────
 // A user-customizable dashboard. Each widget renders one of the site's existing
 // pages inside an iframe — that gives every widget its own JS world so the
@@ -4612,9 +4672,10 @@ const WS_PAGES = [
     {id:"fred",      name:"FRED Indicators"},
   ]},
   { group:"Other", items:[
-    {id:"brief",  name:"Morning Brief"},
-    {id:"news",   name:"Market News"},
-    {id:"ai",     name:"AI Chat"},
+    {id:"brief",   name:"Morning Brief"},
+    {id:"aibrief", name:"⚡ AI Morning Brief"},
+    {id:"news",    name:"Market News"},
+    {id:"ai",      name:"AI Chat"},
   ]},
 ];
 
@@ -4640,9 +4701,9 @@ const WS_BUILTIN_PRESETS = [
   {
     name: "Pre-Market Brief",
     widgets: [
-      {page: "brief",    x: 20,  y: 20,  w: 1200, h: 400},
-      {page: "calendar", x: 20,  y: 440, w: 580,  h: 280},
-      {page: "news",     x: 620, y: 440, w: 600,  h: 280},
+      {page: "aibrief",  x: 20,  y: 20,  w: 1200, h: 360},
+      {page: "calendar", x: 20,  y: 400, w: 580,  h: 320},
+      {page: "news",     x: 620, y: 400, w: 600,  h: 320},
     ],
   },
   {
