@@ -2778,7 +2778,10 @@ function renderAdvancedChart(ind, hist) {
       data:{datasets},
       options:{
         responsive:true,
-        plugins:{legend:{display:false}},
+        plugins:{
+          legend:{display:false},
+          zoom: _stdZoomConfig(_syncChartTabVolume),
+        },
         scales:{
           x:{type:"time",ticks:{color:"#555",maxTicksLimit:10,font:{size:10}},grid:{color:"#1a1a1a"}},
           y:{ticks:{color:"#555",font:{size:10}},grid:{color:"#1a1a1a"},position:"right"}
@@ -2786,6 +2789,7 @@ function renderAdvancedChart(ind, hist) {
         animation:{duration:400}
       }
     });
+    _attachResetOnDblClick(advancedChart, _syncChartTabVolume);
     return;
   }
 
@@ -2805,6 +2809,7 @@ function renderAdvancedChart(ind, hist) {
       interaction:{mode:"index",intersect:false},
       plugins:{
         legend:{display:activeIndicators.ma20||activeIndicators.ma50||activeIndicators.ma200||activeIndicators.bb,labels:{color:"#999",font:{size:10},boxWidth:20}},
+        zoom: _stdZoomConfig(_syncChartTabVolume),
       },
       scales:{
         x:{ticks:{color:"#555",maxTicksLimit:10,font:{size:10}},grid:{color:"#1a1a1a"}},
@@ -2813,6 +2818,7 @@ function renderAdvancedChart(ind, hist) {
       animation:{duration:400}
     }
   });
+  _attachResetOnDblClick(advancedChart, _syncChartTabVolume);
 }
 
 function renderSubCharts(data) {
@@ -2888,7 +2894,8 @@ async function loadPortfolioPerfChart() {
           },
           tooltip:{
             callbacks:{label: c=>`${c.dataset.label}: ${c.raw>=0?'+':''}${c.raw}%`}
-          }
+          },
+          zoom: _stdZoomConfig(),
         },
         scales:{
           x:{ticks:{color:"#555", maxTicksLimit:8, font:{size:10}}, grid:{color:"#1a1a1a"}},
@@ -2897,6 +2904,7 @@ async function loadPortfolioPerfChart() {
         animation:{duration:400}
       }
     });
+    _attachResetOnDblClick(portfolioPerfChart);
   } catch(e){ console.error("portfolio perf chart error", e); }
 }
 
@@ -3501,6 +3509,37 @@ function _syncIntradayVolume({chart}){
   intradayVolChart.update("none");
 }
 
+// Mirror the advanced chart's x-range onto the chart-tab volume chart so the
+// bars stay aligned with the candles/line after a zoom or pan.
+function _syncChartTabVolume({chart}){
+  if (!volChart2 || !chart?.scales?.x) return;
+  const x = volChart2.options.scales.x;
+  x.min = chart.scales.x.min;
+  x.max = chart.scales.x.max;
+  volChart2.update("none");
+}
+
+// Reusable zoom-plugin config: wheel + drag + pinch on the x-axis. If a
+// syncFn is passed, it's called after each gesture so a paired (e.g. volume)
+// chart can mirror the new range.
+function _stdZoomConfig(syncFn){
+  return {
+    pan:  {enabled:true, mode:"x", onPanComplete: syncFn},
+    zoom: {wheel:{enabled:true}, pinch:{enabled:true}, mode:"x",
+           onZoomComplete: syncFn},
+  };
+}
+
+// Attach a double-click handler that resets zoom (and re-syncs a paired chart
+// if any). Call after the chart is constructed.
+function _attachResetOnDblClick(chart, syncFn){
+  if (!chart?.canvas) return;
+  chart.canvas.ondblclick = () => {
+    chart.resetZoom();
+    if (syncFn) syncFn({chart});
+  };
+}
+
 // rebuild=true creates the charts; rebuild=false mutates data in place for a smooth
 // live tick (no flicker, keeps the candlestick/volume canvases stable).
 async function refreshIntraday(sym, rebuild){
@@ -3634,7 +3673,11 @@ async function loadCompare() {
         }))
       },
       options:{
-        plugins:{legend:{labels:{color:"#999",font:{size:11}},display:true},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw>=0?'+':''}${c.raw}%`}}},
+        plugins:{
+          legend:{labels:{color:"#999",font:{size:11}},display:true},
+          tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw>=0?'+':''}${c.raw}%`}},
+          zoom: _stdZoomConfig(),
+        },
         scales:{
           x:{ticks:{color:"#555",maxTicksLimit:10,font:{size:10}},grid:{color:"#1a1a1a"}},
           y:{ticks:{color:"#555",callback:v=>`${v}%`},grid:{color:"#1a1a1a"},position:"right"}
@@ -3642,6 +3685,7 @@ async function loadCompare() {
         animation:{duration:400}
       }
     });
+    _attachResetOnDblClick(compareChart);
   } catch(e) { console.error("compare error", e); }
 }
 
