@@ -1935,20 +1935,6 @@ def morning_brief():
     set_cache(key, result)
     return result
 
-
-# Thin slice of /morning-brief that returns just the AI text — used by the
-# standalone AI Morning Brief widget so a dashboard tile can pin the narrative
-# without re-rendering the full data brief. Shares the morning_brief cache, so
-# loading both incurs only one underlying fetch + one AI call.
-@app.get("/ai/morning-brief")
-def ai_morning_brief():
-    data = morning_brief()
-    return {
-        "text":         data.get("morning_call", ""),
-        "generated_at": data.get("generated_at", ""),
-    }
-
-
 # ── MOVERS ───────────────────────────────────────────────────
 @app.get("/movers")
 def get_movers():
