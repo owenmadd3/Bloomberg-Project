@@ -113,6 +113,16 @@ it over too.
 `bis_state.json` back to the repo, which triggers a normal Render redeploy. That's
 expected and harmless (it happens ~4 times a year).
 
+**Keepalive (why there's a monthly "heartbeat" commit):** GitHub automatically
+disables scheduled workflows after 60 days with no commits to the repo. BIS
+quarters are ~90 days apart, so a second workflow
+(`.github/workflows/keepalive.yml`) makes one tiny commit on the 1st of each
+month to keep the repo active — otherwise the email schedule could get paused
+between quarters. You'll see monthly `chore: keepalive heartbeat` commits (and a
+matching ~50s Render redeploy); both are expected and harmless. If you ever do
+get a GitHub email saying a workflow was disabled for inactivity, just click
+**Enable workflow** on the Actions tab.
+
 ---
 
 ## How to deploy it from scratch (≈5 minutes, no coding)

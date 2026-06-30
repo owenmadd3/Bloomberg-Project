@@ -1,0 +1,41 @@
+name: Keepalive
+
+# GitHub auto-disables scheduled workflows after 60 days with no repo commits.
+# BIS quarters are ~90 days apart, so without periodic activity the BIS debt
+# email schedule (.github/workflows/bis-email.yml) could be paused between
+# updates. This job runs monthly and makes one tiny commit to keep the
+# repository "active", which keeps every scheduled workflow alive.
+#
+# The 30-day cadence is well inside the 60-day window, and because this job
+# itself commits each run, the activity clock never runs out — it is
+# self-sustaining once enabled.
+on:
+  schedule:
+    - cron: "0 12 1 * *"   # 12:00 UTC on the 1st of every month
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update heartbeat and commit
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/last-heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/last-heartbeat.txt
+          if git diff --cached --quiet; then
+            echo "No change to commit."
+          else
+            git commit -m "chore: keepalive heartbeat"
+            git push
+          fi
