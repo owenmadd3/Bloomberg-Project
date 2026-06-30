@@ -1,0 +1,57 @@
+name: BIS debt email
+
+# Checks the BIS Data Portal daily and emails the debt-to-GDP table to the
+# recipient list ONLY when a new quarter is published. See bis_email.py.
+on:
+  schedule:
+    # 13:00 UTC daily. BIS releases quarterly, so this is a no-op on all but
+    # ~4 days a year — it just notices the new quarter the day it lands.
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Send even if there is no new quarter (testing)"
+        type: boolean
+        default: false
+
+# Needed so the job can commit the updated bis_state.json back to the repo.
+permissions:
+  contents: write
+
+# Never let two runs send at once.
+concurrency:
+  group: bis-email
+  cancel-in-progress: false
+
+jobs:
+  bis-email:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Check BIS and email on new quarter
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          BIS_EMAIL_FROM: ${{ secrets.BIS_EMAIL_FROM }}
+          BIS_EMAIL_RECIPIENTS: ${{ secrets.BIS_EMAIL_RECIPIENTS }}
+          FORCE_SEND: ${{ inputs.force && '1' || '' }}
+        run: python bis_email.py
+
+      - name: Persist last-emailed quarter
+        run: |
+          if ! git diff --quiet bis_state.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add bis_state.json
+            git commit -m "BIS email: record latest emailed quarter"
+            git push
+          else
+            echo "No state change to commit."
+          fi

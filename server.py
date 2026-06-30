@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from groq import Groq
 from valuation import compute_valuation
+from bis_debt import build_table as _bis_build_table
 
 load_dotenv()
 ai_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -1970,5 +1971,27 @@ def get_valuation(symbol: str):
     except Exception as e:
         return {"error": f"Valuation failed: {e}"}
     if "error" not in result:
+        set_cache(key, result)
+    return result
+
+# ── BIS GLOBAL DEBT ──────────────────────────────────────────
+@app.get("/bis-debt")
+def bis_debt():
+    """BIS Total Non-Financial Debt-to-GDP, pre-COVID (4Q2019) vs latest quarter.
+
+    Quarterly source data — cache for an hour so the BIS portal isn't hit on
+    every page load while still surfacing a new quarter the day it lands.
+    """
+    key = "bis_debt"
+    data, hit = cached(key, ttl=3600)
+    if hit:
+        return data
+    try:
+        result = _bis_build_table()
+    except Exception as e:
+        return {"error": f"BIS fetch failed: {e}"}
+    # Only cache a genuinely populated table so a transient BIS outage doesn't
+    # pin an all-null response for an hour.
+    if result.get("latest_period"):
         set_cache(key, result)
     return result

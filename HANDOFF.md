@@ -58,6 +58,63 @@ working once the intern's accounts are closed.
 
 ---
 
+## The quarterly BIS debt email (Global Debt page)
+
+The site has a **Global Debt** page (Macro menu) showing the BIS Total
+Non-Financial Debt-to-GDP table — pre-COVID (4Q 2019) vs the latest quarter, for
+10 economies. The same table is **emailed automatically to a recipient list when
+BIS publishes a new quarter** (roughly 4 times a year; BIS data is quarterly, not
+monthly). No signup page or database — the recipient list is a single secret.
+
+**How it works (no server involved):**
+
+- The page reads the live `/bis-debt` endpoint in `server.py`, which pulls the
+  data from the BIS Data Portal (no API key needed).
+- The email is sent by `bis_email.py`, run on a schedule by a **free GitHub
+  Actions workflow** (`.github/workflows/bis-email.yml`) — *not* by Render. The
+  workflow runs daily, but only actually emails when a genuinely new quarter
+  appears (it remembers the last one sent in `bis_state.json`). On all other days
+  it's a no-op.
+- Emails are sent through **Gmail SMTP** from a dedicated Gmail account.
+  Recipients are BCC'd, so they never see each other's addresses. (Gmail caps
+  sends at ~500 recipients/day — far above this list's size.)
+
+**One-time setup (do this to turn the emails on):**
+
+1. Create (or pick) a Gmail account to send from, e.g. `globaldebtbrief@gmail.com`.
+2. On that Google account: turn on **2-Step Verification**, then generate an
+   **App Password** (Google Account → Security → 2-Step Verification → App
+   passwords). It's a 16-character code — this is what the workflow logs in with,
+   *not* the normal Gmail password.
+3. In GitHub → repo **Settings → Secrets and variables → Actions → New repository
+   secret**, add these secrets:
+
+   | Secret | Value |
+   | --- | --- |
+   | `GMAIL_ADDRESS` | the sending Gmail, e.g. `globaldebtbrief@gmail.com` |
+   | `GMAIL_APP_PASSWORD` | the 16-char app password from step 2 |
+   | `BIS_EMAIL_RECIPIENTS` | comma-separated recipient emails |
+   | `BIS_EMAIL_FROM` | *(optional)* display name, e.g. `Global Debt <globaldebtbrief@gmail.com>`. Defaults to `GMAIL_ADDRESS` if omitted. |
+
+4. To add or remove a recipient later, just edit the `BIS_EMAIL_RECIPIENTS`
+   secret — nothing else changes.
+5. To test it immediately: GitHub → **Actions → BIS debt email → Run workflow**,
+   tick **force**. That sends the current quarter to the list regardless of
+   whether it's new. (Leave force off for the normal scheduled behavior.)
+
+**⚠️ Ownership note (same as the API keys):** the sending Gmail account is
+currently the intern's. Before the internship ends, the company should create its
+**own** sending account (a company Gmail/Workspace address), generate a fresh app
+password, and replace the `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` / `BIS_EMAIL_FROM`
+secrets. The recipient list lives only in the `BIS_EMAIL_RECIPIENTS` secret — copy
+it over too.
+
+**Good to know:** when a new quarter is emailed, the workflow commits the updated
+`bis_state.json` back to the repo, which triggers a normal Render redeploy. That's
+expected and harmless (it happens ~4 times a year).
+
+---
+
 ## How to deploy it from scratch (≈5 minutes, no coding)
 
 1. Make sure the code is in a GitHub repo the company controls (see step 1 above).

@@ -494,6 +494,7 @@
       <div class="nav-dropdown-item" onclick="navTo('forex','grp-macro')">Forex / Fixed Income <span style="color:#333;font-size:10px;">[F]</span></div>
       <div class="nav-dropdown-item" onclick="navTo('calendar','grp-macro')">Economic Calendar <span style="color:#333;font-size:10px;">[C]</span></div>
       <div class="nav-dropdown-item" onclick="navTo('fred','grp-macro')">FRED Indicators <span class="nav-badge">NEW</span></div>
+      <div class="nav-dropdown-item" onclick="navTo('bisdebt','grp-macro')">Global Debt <span class="nav-badge">NEW</span></div>
     </div>
   </div>
 
@@ -1447,6 +1448,26 @@
       </div>
     </div>
 
+    <!-- BIS GLOBAL DEBT PAGE -->
+    <div class="page" id="page-bisdebt">
+      <div style="overflow-y:auto;padding:16px;flex:1;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <div style="color:var(--accent);font-size:14px;font-weight:bold;letter-spacing:1px;">GLOBAL DEBT · TOTAL NON-FINANCIAL DEBT-TO-GDP</div>
+          <button onclick="loadBisDebt(true)" style="background:var(--bg4);border:1px solid var(--border2);color:var(--text2);padding:5px 12px;cursor:pointer;font-family:inherit;font-size:12px;">↺ Refresh</button>
+        </div>
+        <p style="color:#666;font-size:11px;margin-bottom:16px;">BIS total credit to the non-financial sector (public + private), % of GDP · pre-COVID vs latest quarter</p>
+        <div id="bisdebt-loading" style="color:#666;font-size:12px;">Loading BIS debt data…</div>
+        <div id="bisdebt-content" style="display:none;max-width:720px;">
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:16px;">
+            <div id="bisdebt-title" style="color:var(--text);font-size:13px;font-weight:bold;margin-bottom:12px;">BIS Total Non-Financial Debt-to-GDP — Pre &amp; Post Covid</div>
+            <div id="bisdebt-table"></div>
+            <div id="bisdebt-source" style="color:#444;font-size:10px;margin-top:12px;"></div>
+          </div>
+          <p style="color:#555;font-size:11px;margin-top:12px;">↻ Subscribers are emailed this table automatically when BIS publishes a new quarter.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- MORNING BRIEF PAGE -->
     <div class="page" id="page-brief">
       <div style="overflow-y:auto;padding:16px;flex:1;">
@@ -1773,7 +1794,7 @@ if (!IS_WS_IFRAME) connectWebSocket();
           screener:"grp-research", valuation:"grp-research", "52week":"grp-research",
           correlation:"grp-research", volatility:"grp-research", trade:"grp-research",
           portfolio:"grp-portfolio", dividends:"grp-portfolio",
-          forex:"grp-macro", calendar:"grp-macro", fred:"grp-macro",
+          forex:"grp-macro", calendar:"grp-macro", fred:"grp-macro", bisdebt:"grp-macro",
         };
         navTo(wsPage, groupMap[wsPage] || "grp-markets");
       }
@@ -1853,9 +1874,56 @@ function navTo(name, groupId) {
   if(name==="trade")      initTrade();
   if(name==="dividends")  loadDividends();
   if(name==="fred")       loadFred();
+  if(name==="bisdebt")    loadBisDebt();
   if(name==="valuation")  initValuation();
   if(name==="mostactive") loadMostActive();
   if(name==="workspace")  wsInit();
+}
+
+// ── BIS GLOBAL DEBT ──────────────────────────────────────────
+let _bisDebtLoaded = false;
+async function loadBisDebt(force=false) {
+  if(_bisDebtLoaded && !force) return;
+  const loading = document.getElementById('bisdebt-loading');
+  const content = document.getElementById('bisdebt-content');
+  loading.style.display = 'block';
+  loading.textContent = 'Loading BIS debt data…';
+  content.style.display = 'none';
+  try {
+    const d = await fetch(`${API}/bis-debt`).then(r=>r.json());
+    if(d.error || !d.latest_period) { loading.textContent = d.error || 'No BIS data available.'; return; }
+
+    const cell = (txt, extra='') => `<td style="padding:7px 12px;text-align:right;border:1px solid var(--border);${extra}">${txt}</td>`;
+    const pct  = v => (v===null||v===undefined) ? '—' : `${v}%`;
+    const chgCell = v => {
+      if(v===null||v===undefined) return cell('—');
+      const color = v>0 ? '#ff3d00' : v<0 ? '#00c853' : '#888'; // rising debt = red
+      return cell(`${v>0?'+':''}${v}%`, `color:${color};`);
+    };
+    const nameCell = n => `<td style="padding:7px 12px;text-align:left;border:1px solid var(--border);color:var(--text);font-weight:500;">${n}</td>`;
+    const rowHtml = r => `<tr>${nameCell(r.name)}${cell(pct(r.baseline))}${cell(pct(r.latest),'color:var(--accent);font-weight:bold;')}${chgCell(r.change)}</tr>`;
+    const spacer = `<tr><td colspan="4" style="padding:6px;border:none;"></td></tr>`;
+
+    const head = `<tr>
+      <th style="padding:7px 12px;text-align:left;border:1px solid var(--border);color:#666;font-size:10px;text-transform:uppercase;"></th>
+      <th style="padding:7px 12px;text-align:right;border:1px solid var(--border);color:#666;font-size:10px;text-transform:uppercase;">${d.baseline_label}</th>
+      <th style="padding:7px 12px;text-align:right;border:1px solid var(--border);color:#666;font-size:10px;text-transform:uppercase;">${d.latest_label}</th>
+      <th style="padding:7px 12px;text-align:right;border:1px solid var(--border);color:#666;font-size:10px;text-transform:uppercase;">Changes as %<br>of GDP</th>
+    </tr>`;
+
+    const body = d.groups.map(g => g.map(rowHtml).join('')).join(spacer);
+    document.getElementById('bisdebt-table').innerHTML =
+      `<table style="border-collapse:collapse;font-size:12px;width:100%;"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    document.getElementById('bisdebt-title').textContent =
+      `BIS Total Non-Financial Debt-to-GDP — Pre & Post Covid`;
+    document.getElementById('bisdebt-source').textContent = `Source: ${d.source}`;
+
+    content.style.display = 'block';
+    loading.style.display = 'none';
+    _bisDebtLoaded = true;
+  } catch(e) {
+    loading.textContent = 'Failed to load BIS debt data.';
+  }
 }
 
 // ── VALUE SCREENER ───────────────────────────────────────────
@@ -4610,6 +4678,7 @@ const WS_PAGES = [
     {id:"forex",     name:"Forex / Fixed Income"},
     {id:"calendar",  name:"Economic Calendar"},
     {id:"fred",      name:"FRED Indicators"},
+    {id:"bisdebt",   name:"Global Debt"},
   ]},
   { group:"Other", items:[
     {id:"brief",  name:"Morning Brief"},
