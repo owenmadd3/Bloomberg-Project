@@ -2,12 +2,17 @@
 BIS Total Non-Financial Debt-to-GDP — shared data layer.
 
 Pulls "Total credit to the non-financial sector" (all lending sectors, market
-value, % of GDP, adjusted for breaks) from the BIS Data Portal for a fixed set
-of economies and builds the pre/post-COVID comparison table that mirrors the
+value, % of GDP, adjusted for breaks) from the BIS SDMX API for a fixed set of
+economies and builds the pre/post-COVID comparison table that mirrors the
 printed BIS report. Imported by both server.py (the /bis-debt endpoint) and
 bis_email.py (the scheduled email job), so the site and the email never drift.
 
-BIS series key format:  Q.{COUNTRY}.C.A.M.770.A
+Data source: the BIS SDMX REST API at stats.bis.org. All 10 economies come back
+in ONE request using a multi-value key (US+JP+...), then we group by country.
+
+  https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0/Q.{codes}.C.A.M.770.A?format=csv
+
+Series key dimensions:  Q.{country}.C.A.M.770.A
   Q   = Quarterly
   {C} = country (ISO-2, e.g. US, JP; XM = Euro area)
   C   = Non-financial sector  (total: general govt + households + NFCs)
@@ -18,10 +23,13 @@ BIS series key format:  Q.{COUNTRY}.C.A.M.770.A
 
 This "C / 770" combination is exactly the metric in the printed table:
 "total non-financial debt to GDP, which includes both public and private debt."
+
+NOTE: this replaced the old data.bis.org "Time Series Search Export" download URL,
+which BIS retired (it now 404s). The SDMX API returns clean CSV (standard headers,
+no metadata preamble) and reports periods as "2025-Q4" rather than "2025-12-31".
 """
 import csv
 import io
-from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -33,90 +41,76 @@ BIS_GROUPS = [
 ]
 
 # Fixed pre-COVID baseline quarter. Only the "latest" column ever moves.
-BASELINE_PERIOD = "2019-12-31"
+BASELINE_PERIOD = "2019-Q4"
 BASELINE_LABEL = "4Q 2019"
 
-_BASE = "https://data.bis.org/topics/TOTAL_CREDIT/BIS,WS_TC,2.0"
+_API = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (BloombergTerminal BIS debt fetch)"}
 
 
-def _series_url(code):
-    return f"{_BASE}/Q.{code}.C.A.M.770.A?file_format=csv&format=long"
+def _all_codes():
+    return [code for grp in BIS_GROUPS for (_name, code) in grp]
 
 
-def _fetch_series(code):
-    """Return {TIME_PERIOD: float} for one country, or {} on any failure.
+def _series_url(codes):
+    key = f"Q.{'+'.join(codes)}.C.A.M.770.A"
+    return f"{_API}/{key}?format=csv"
 
-    Worker swallows its own errors so a single bad country never kills the fan-out
-    (same contract as server.py's _parallel workers).
+
+def _fetch_all():
+    """Return {country_code: {TIME_PERIOD: float}} for every economy in one call.
+
+    Raises on network/HTTP failure so build_table() can decide how to degrade.
     """
-    try:
-        r = requests.get(_series_url(code), headers=_HEADERS, timeout=30)
-        r.raise_for_status()
-        # The export has a 3-line metadata preamble before the real table, the
-        # data header uses "CODE:Label" column names, and the DATAFLOW_ID column
-        # is quoted and contains commas ("BIS,WS_TC,2.0") — so strip the BOM,
-        # locate the header row, normalize names to the code, and use a real CSV
-        # parser (never str.split(",")).
-        lines = r.text.lstrip("﻿").splitlines()
-        header_idx = next((i for i, ln in enumerate(lines)
-                           if ln.startswith("DATAFLOW_ID")), None)
-        if header_idx is None:
-            return {}
-        rows = list(csv.reader(io.StringIO("\n".join(lines[header_idx:]))))
-        header = [c.split(":", 1)[0] for c in rows[0]]
+    codes = _all_codes()
+    r = requests.get(_series_url(codes), headers=_HEADERS, timeout=45)
+    r.raise_for_status()
+    out = {c: {} for c in codes}
+    for row in csv.DictReader(io.StringIO(r.text)):
+        cty = (row.get("BORROWERS_CTY") or "").strip()
+        period = (row.get("TIME_PERIOD") or "").strip()
+        raw = (row.get("OBS_VALUE") or "").strip()
+        if cty not in out or not period or not raw:
+            continue
         try:
-            ti = header.index("TIME_PERIOD")
-            vi = header.index("OBS_VALUE")
+            out[cty][period] = float(raw)
         except ValueError:
-            return {}
-        out = {}
-        for row in rows[1:]:
-            if len(row) <= max(ti, vi):
-                continue
-            period, raw = row[ti].strip(), row[vi].strip()
-            if not period or not raw:
-                continue
-            try:
-                out[period] = float(raw)
-            except ValueError:
-                continue
-        return out
-    except Exception:
-        return {}
+            continue
+    return out
 
 
 def _period_label(period):
-    """'2025-12-31' -> '4Q 2025'. BIS uses end-of-quarter dates."""
+    """'2025-Q4' -> '4Q 2025'."""
     if not period:
         return "—"
     try:
-        year, month, _ = period.split("-")
+        year, q = period.split("-")
     except ValueError:
         return period
-    q = {"03": "1Q", "06": "2Q", "09": "3Q", "12": "4Q"}.get(month, "")
-    return f"{q} {year}".strip()
+    return f"{q.replace('Q', '')}Q {year}"
 
 
 def build_table():
-    """Fetch every country in parallel and assemble the comparison table.
+    """Fetch every country and assemble the comparison table.
 
     Returns a JSON-safe dict:
       {
         baseline_period, baseline_label,
         latest_period, latest_label,
-        groups: [ [ {name, baseline, latest, change}, ... ], ... ],
+        groups: [ [ {name, baseline, latest, period, change}, ... ], ... ],
         source,
       }
     Percentages are rounded ints (matching the printed table) or None when a
     figure is unavailable. `change` is latest − baseline of the rounded values,
     so it ties out to the displayed columns exactly.
     """
-    codes = [code for grp in BIS_GROUPS for (_name, code) in grp]
-    with ThreadPoolExecutor(max_workers=min(16, len(codes))) as ex:
-        fetched = dict(zip(codes, ex.map(_fetch_series, codes)))
+    try:
+        fetched = _fetch_all()
+    except Exception:
+        fetched = {c: {} for c in _all_codes()}
 
-    # Newest quarter present across all series (ISO date strings sort correctly).
+    # Newest quarter present across all series. Period strings are "YYYY-QN",
+    # which sort chronologically as plain strings (fixed-width year, then quarter).
     all_periods = set()
     for series in fetched.values():
         all_periods.update(series.keys())
@@ -143,7 +137,7 @@ def build_table():
         "latest_period": latest_period,
         "latest_label": _period_label(latest_period),
         "groups": groups,
-        "source": ("BIS Data Portal (WS_TC) — Total credit to the non-financial "
+        "source": ("BIS SDMX API (WS_TC) — Total credit to the non-financial "
                    "sector, all lenders, % of GDP, adjusted for breaks"),
     }
 

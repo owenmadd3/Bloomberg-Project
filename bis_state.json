@@ -1,4 +1,4 @@
 {
-  "last_emailed_period": "2025-12-31",
-  "_note": "Updated automatically by bis_email.py. 'last_emailed_period' is the most recent BIS quarter (e.g. 2025-12-31) that has already been emailed. Starts null so the first scheduled run sends the current quarter once recipient secrets are set."
+  "last_emailed_period": "2025-Q4",
+  "_note": "Updated automatically by bis_email.py. 'last_emailed_period' is the most recent BIS quarter (e.g. 2025-Q4) that has already been emailed, in the SDMX 'YYYY-QN' format. Starts null so the first scheduled run sends the current quarter once recipient secrets are set."
 }
